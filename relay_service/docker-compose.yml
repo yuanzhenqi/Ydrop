@@ -1,0 +1,11 @@
+services:
+  relay:
+    build: .
+    container_name: ydoc-relay
+    env_file:
+      - .env
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
