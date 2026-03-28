@@ -6,3 +6,4 @@ local.properties
 .idea/
 .gstack/
 relay_service/.env
+relay_service/app/__pycache__/
