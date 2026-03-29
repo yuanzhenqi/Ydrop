@@ -24,6 +24,7 @@ class SettingsStore(
                 enabled = prefs[Keys.overlayEnabled] ?: false,
                 handleSizeDp = prefs[Keys.overlayHandleSize] ?: 24,
                 handleAlpha = prefs[Keys.overlayHandleAlpha]?.toFloatOrNull() ?: 0.8f,
+                dockSide = prefs[Keys.overlayDockSide] ?: "RIGHT",
             ),
             relay = RelayConfig(
                 baseUrl = prefs[Keys.relayBaseUrl] ?: DefaultConfig.RELAY_BASE_URL,
@@ -52,6 +53,7 @@ class SettingsStore(
             prefs[Keys.overlayEnabled] = config.enabled
             prefs[Keys.overlayHandleSize] = config.handleSizeDp
             prefs[Keys.overlayHandleAlpha] = config.handleAlpha.toString()
+            prefs[Keys.overlayDockSide] = config.dockSide
         }
     }
 
@@ -71,6 +73,7 @@ class SettingsStore(
         val overlayEnabled = booleanPreferencesKey("overlay_enabled")
         val overlayHandleSize = androidx.datastore.preferences.core.intPreferencesKey("overlay_handle_size")
         val overlayHandleAlpha = stringPreferencesKey("overlay_handle_alpha")
+        val overlayDockSide = stringPreferencesKey("overlay_dock_side")
         val volcAppId = stringPreferencesKey("volc_app_id")
         val volcAccessToken = stringPreferencesKey("volc_access_token")
         val volcResourceId = stringPreferencesKey("volc_resource_id")

@@ -31,11 +31,14 @@ data class VolcengineConfig(
     val enabled: Boolean = false,
 )
 
+enum class OverlayDockSide { LEFT, RIGHT }
+
 @Serializable
 data class OverlayConfig(
     val enabled: Boolean = false,
     val handleSizeDp: Int = 24,
     val handleAlpha: Float = 0.8f,
+    val dockSide: String = OverlayDockSide.RIGHT.name,
 )
 
 @Serializable

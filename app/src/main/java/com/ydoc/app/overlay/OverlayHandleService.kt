@@ -28,11 +28,13 @@ import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.Note
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NotePriority
+import com.ydoc.app.model.OverlayDockSide
 import com.ydoc.app.model.TranscriptionStatus
 import com.ydoc.app.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
@@ -57,6 +59,8 @@ class OverlayHandleService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var recordingTimerJob: Job? = null
     private var recordButtonHolding = false
+    private var dockSide: OverlayDockSide = OverlayDockSide.RIGHT
+    private var dismissLayer: View? = null
 
     private val baseWindowFlags: Int
         get() = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -65,19 +69,27 @@ class OverlayHandleService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
     override fun onCreate() {
         super.onCreate()
         appContainer = AppContainer(applicationContext)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        serviceScope.launch {
+            val cfg = appContainer.settingsStore.settingsFlow.first().overlay
+            dockSide = runCatching { OverlayDockSide.valueOf(cfg.dockSide) }.getOrDefault(OverlayDockSide.RIGHT)
+        }
         createOverlay()
         observeNotes()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        dismissLayer?.let { runCatching { windowManager.removeView(it) } }
         if (::rootView.isInitialized) {
-            windowManager.removeView(rootView)
+            runCatching { windowManager.removeView(rootView) }
         }
+        serviceScope.cancel()
     }
 
     private fun createOverlay() {
@@ -103,6 +115,12 @@ class OverlayHandleService : Service() {
             rootView.findViewById(R.id.overlayPriorityUrgent),
         )
 
+        // Restore saved dock side
+        serviceScope.launch {
+            val cfg = appContainer.settingsStore.settingsFlow.first().overlay
+            dockSide = runCatching { OverlayDockSide.valueOf(cfg.dockSide) }.getOrDefault(OverlayDockSide.RIGHT)
+        }
+
         layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -119,6 +137,24 @@ class OverlayHandleService : Service() {
             x = 0
             y = 0
         }
+
+        // Create full-screen dismiss layer (invisible, behind panel)
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+        val dismissParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        val dl = View(this)
+        dl.setBackgroundColor(0x00000000)
+        dl.visibility = View.GONE
+        dl.setOnClickListener { collapsePanel() }
+        windowManager.addView(dl, dismissParams)
+        dismissLayer = dl
 
         windowManager.addView(rootView, layoutParams)
         bindInteractions()
@@ -224,19 +260,33 @@ class OverlayHandleService : Service() {
                         if (kotlin.math.abs(event.rawX - touchX) > 12 || kotlin.math.abs(event.rawY - touchY) > 12) {
                             moved = true
                         }
-                        params.x = (startX - (event.rawX - touchX).toInt()).coerceIn(-32, 32)
+                        val screenWidth = resources.displayMetrics.widthPixels
+                        val midX = screenWidth / 2f
+                        val isLeft = event.rawX < midX
+                        params.gravity = Gravity.CENTER_VERTICAL or if (isLeft) Gravity.START else Gravity.END
                         params.y = startY + (event.rawY - touchY).toInt()
                         windowManager.updateViewLayout(rootView, params)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        // Snap to nearest edge
+                        val screenWidth = resources.displayMetrics.widthPixels
+                        val midX = screenWidth / 2f
+                        val isLeft = event.rawX < midX
+                        params.gravity = Gravity.CENTER_VERTICAL or if (isLeft) Gravity.START else Gravity.END
+                        params.x = 0
+                        windowManager.updateViewLayout(rootView, params)
+                        dockSide = if (isLeft) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
+                        serviceScope.launch {
+                            val cfg = appContainer.settingsStore.settingsFlow.first().overlay
+                            appContainer.settingsStore.saveOverlay(cfg.copy(dockSide = dockSide.name))
+                        }
                         if (!moved) {
-                            overlayState = overlayState.copy(
-                                mode = if (overlayState.mode == OverlayMode.COLLAPSED) OverlayMode.EXPANDED else OverlayMode.COLLAPSED,
-                            )
                             if (overlayState.mode == OverlayMode.COLLAPSED) {
-                                exitTextInputMode()
+                                overlayState = overlayState.copy(mode = OverlayMode.EXPANDED)
+                                render()
+                            } else {
+                                collapsePanel()
                             }
-                            render()
                         }
                     }
                 }
@@ -255,8 +305,24 @@ class OverlayHandleService : Service() {
         }
     }
 
+    private fun collapsePanel() {
+        overlayState = overlayState.copy(mode = OverlayMode.COLLAPSED)
+        exitTextInputMode()
+        render()
+    }
+
     private fun render() {
-        panelView.visibility = if (overlayState.mode == OverlayMode.COLLAPSED) View.GONE else View.VISIBLE
+        val expanded = overlayState.mode != OverlayMode.COLLAPSED
+        panelView.visibility = if (expanded) View.VISIBLE else View.GONE
+        dismissLayer?.visibility = if (expanded) View.VISIBLE else View.GONE
+        // Dock side gravity
+        layoutParams?.let { p ->
+            p.gravity = if (dockSide == OverlayDockSide.LEFT)
+                Gravity.CENTER_VERTICAL or Gravity.START
+            else
+                Gravity.CENTER_VERTICAL or Gravity.END
+            runCatching { windowManager.updateViewLayout(rootView, p) }
+        }
         recordButton.setImageResource(if (overlayState.isRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now)
         recordingStatus.text = if (overlayState.isRecording) "录音中 ${overlayState.recordingSeconds}s" else "长按把手直接录音"
         serviceScope.launch {
