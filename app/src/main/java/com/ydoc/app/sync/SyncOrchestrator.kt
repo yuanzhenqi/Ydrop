@@ -60,7 +60,6 @@ class SyncOrchestrator(
                 continue
             }
 
-            // Step 1: list remote files
             val remoteFilesResult = client.listRemote(target)
             if (remoteFilesResult.isFailure) {
                 AppLogger.error("YDOC_SYNC", "列出远端文件失败", remoteFilesResult.exceptionOrNull())
@@ -70,14 +69,12 @@ class SyncOrchestrator(
             val remoteFiles = remoteFilesResult.getOrThrow()
             Log.i(TAG, "Found ${remoteFiles.size} remote files")
 
-            // Step 2: download all remote files, extract id from frontmatter
             val remoteByNoteId = mutableMapOf<String, RemoteFileInfo>()
             val remoteContentById = mutableMapOf<String, String>()
             for (rfi in remoteFiles) {
                 val contentResult = client.pull(target, rfi.path)
                 if (contentResult.isFailure) {
                     Log.e(TAG, "pull failed for ${rfi.path}: ${contentResult.exceptionOrNull()?.message}")
-                    AppLogger.error("YDOC_SYNC", "下载远端文件失败: ${rfi.path}", contentResult.exceptionOrNull())
                     result.failed++
                     continue
                 }
@@ -86,49 +83,54 @@ class SyncOrchestrator(
                 if (id != null) {
                     remoteByNoteId[id] = rfi
                     remoteContentById[id] = content
-                    Log.d(TAG, "Remote file ${rfi.path} -> id=$id")
+                    Log.d(TAG, "Remote file ${rfi.path} -> id=$id lastModified=${rfi.lastModified}")
                 } else {
                     Log.w(TAG, "Remote file ${rfi.path} has no id in frontmatter")
                 }
             }
             Log.i(TAG, "Parsed ${remoteByNoteId.size} remote notes by id")
 
-            // Step 3: get all local notes
             val allLocalNotes = noteRepository.observeNotes().first()
             val localById = allLocalNotes.associateBy { it.id }
             Log.i(TAG, "Local notes: ${allLocalNotes.size}, tombstones: ${tombstoneIds.size}")
 
-            // Step 4: pull from remote — remote has, local may or may not have
             for ((remoteId, rfi) in remoteByNoteId) {
                 val content = remoteContentById[remoteId]!!
                 val local = localById[remoteId]
 
                 if (local != null) {
-                    // Both exist — compare updatedAt
                     val remoteNote = formatter.parseFromMarkdown(content, rfi.path)
                     if (remoteNote == null) {
                         Log.e(TAG, "parseFromMarkdown failed for remote id=$remoteId")
                         result.failed++
                         continue
                     }
-                    val remoteTime = remoteNote.updatedAt
+                    val remoteFrontmatterTime = remoteNote.updatedAt
                     val localTime = local.updatedAt
-                    Log.d(TAG, "Compare id=$remoteId: remoteTime=$remoteTime localTime=$localTime localStatus=${local.status}")
+                    val localSyncedAt = local.lastSyncedAt ?: 0L
+                    val httpLastModified = rfi.lastModified ?: 0L
+                    val contentChanged = remoteNote.content != local.content ||
+                        remoteNote.title != local.title ||
+                        remoteNote.category != local.category ||
+                        remoteNote.priority != local.priority
 
-                    if (remoteTime > localTime) {
-                        // Remote is newer — pull
-                        val merged = remoteNote.copy(remotePath = rfi.path)
-                        noteRepository.upsertFromRemote(merged)
-                        result.pulled++
-                        Log.i(TAG, "PULLED remote update for id=$remoteId (remote=$remoteTime > local=$localTime)")
-                    } else if (localTime > remoteTime && local.status != NoteStatus.SYNCED) {
-                        // Local is newer and not synced — push
+                    Log.d(TAG, "Compare id=$remoteId: frontmatter=$remoteFrontmatterTime local=$localTime lastSynced=$localSyncedAt httpLastMod=$httpLastModified contentChanged=$contentChanged")
+
+                    if (httpLastModified > localSyncedAt || (remoteFrontmatterTime > localTime)) {
+                        if (contentChanged) {
+                            val merged = remoteNote.copy(remotePath = rfi.path)
+                            noteRepository.upsertFromRemote(merged)
+                            result.pulled++
+                            Log.i(TAG, "PULLED id=$remoteId (httpLastMod=$httpLastModified > lastSynced=$localSyncedAt or frontmatter newer)")
+                        } else {
+                            Log.d(TAG, "SKIP id=$remoteId (content unchanged)")
+                        }
+                    } else if (localTime > remoteFrontmatterTime && local.status != NoteStatus.SYNCED) {
                         pushNote(local, client, target, result)
                     } else {
-                        Log.d(TAG, "No action for id=$remoteId (equal timestamps or already synced)")
+                        Log.d(TAG, "No action for id=$remoteId")
                     }
                 } else {
-                    // Remote only — pull if not tombstoned
                     if (remoteId !in tombstoneIds) {
                         val remoteNote = formatter.parseFromMarkdown(content, rfi.path)
                         if (remoteNote != null) {
@@ -142,7 +144,6 @@ class SyncOrchestrator(
                 }
             }
 
-            // Step 5: push local notes that remote doesn't have
             for (note in allLocalNotes) {
                 if (note.id in tombstoneIds) continue
                 if (note.status == NoteStatus.SYNCED && note.id in remoteByNoteId.keys) continue
@@ -151,14 +152,12 @@ class SyncOrchestrator(
                 }
             }
 
-            // Step 6: delete remote files for tombstoned notes
             for (tombstoneId in tombstoneIds) {
                 val rfi = remoteByNoteId[tombstoneId]
                 if (rfi != null) {
                     client.deleteByPath(target, rfi.path).onFailure {
                         AppLogger.error("YDOC_SYNC", "远端删除墓碑笔记失败: $tombstoneId", it)
                     }
-                    Log.i(TAG, "Deleted remote tombstone id=$tombstoneId path=${rfi.path}")
                 }
             }
         }
