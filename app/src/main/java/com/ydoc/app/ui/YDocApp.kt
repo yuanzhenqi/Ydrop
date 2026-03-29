@@ -68,6 +68,7 @@ import com.ydoc.app.model.Note
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NoteColorToken
 import com.ydoc.app.model.NotePriority
+import com.ydoc.app.model.NoteSource
 import com.ydoc.app.model.RecordingState
 import com.ydoc.app.model.RecordingUiState
 import com.ydoc.app.model.SyncSettingsState
@@ -690,7 +691,11 @@ private fun NoteCard(
 ) {
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
-    val bodyText = note.transcript?.takeIf { it.isNotBlank() } ?: note.content
+    val bodyText = when {
+        note.source == NoteSource.VOICE && note.transcript?.isNotBlank() == true && note.content != note.transcript -> note.content
+        note.transcript?.isNotBlank() == true -> note.transcript
+        else -> note.content
+    }
     var isOverflowing by remember(note.id) { mutableStateOf(false) }
     val maxPreviewLines = 6
     Card(
