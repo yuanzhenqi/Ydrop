@@ -28,4 +28,6 @@ data class NoteEntity(
     val transcriptionUpdatedAt: Long?,
     val syncError: String?,
     val pinned: Boolean,
+    val remotePath: String?,
+    val lastPulledAt: Long?,
 )

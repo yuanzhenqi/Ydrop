@@ -1,5 +1,9 @@
 package com.ydoc.app.overlay
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,9 +21,11 @@ import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.ydoc.app.MainActivity
 import com.ydoc.app.R
@@ -43,7 +49,7 @@ import kotlinx.coroutines.launch
 class OverlayHandleService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var appContainer: AppContainer
-    private lateinit var rootView: View
+    private lateinit var rootView: FrameLayout
     private lateinit var handleView: View
     private lateinit var panelView: View
     private lateinit var recentContainer: LinearLayout
@@ -79,6 +85,8 @@ class OverlayHandleService : Service() {
             val cfg = appContainer.settingsStore.settingsFlow.first().overlay
             dockSide = runCatching { OverlayDockSide.valueOf(cfg.dockSide) }.getOrDefault(OverlayDockSide.RIGHT)
         }
+        createNotificationChannel()
+        startForeground(NOTIFICATION_ID, buildNotification())
         createOverlay()
         observeNotes()
     }
@@ -92,44 +100,85 @@ class OverlayHandleService : Service() {
         serviceScope.cancel()
     }
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "悬浮助手",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                setShowBadge(false)
+                description = "保持悬浮把手运行"
+            }
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Ydrop 悬浮助手")
+            .setContentText("正在运行中")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pending)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+    }
+
     private fun createOverlay() {
-        rootView = LayoutInflater.from(this).inflate(R.layout.overlay_handle, null)
-        handleView = rootView.findViewById(R.id.overlayHandle)
-        panelView = rootView.findViewById(R.id.overlayPanel)
-        recentContainer = rootView.findViewById(R.id.overlayRecentNotes)
-        draftInput = rootView.findViewById(R.id.overlayDraftInput)
-        saveButton = rootView.findViewById(R.id.overlaySaveButton)
-        recordButton = rootView.findViewById(R.id.overlayRecordButton)
-        recordingStatus = rootView.findViewById(R.id.overlayRecordingStatus)
+        rootView = FrameLayout(this)
+
+        val layoutInflater = LayoutInflater.from(this)
+        val handlePanelLayout = layoutInflater.inflate(R.layout.overlay_handle, null) as LinearLayout
+        handleView = handlePanelLayout.findViewById(R.id.overlayHandle)
+        panelView = handlePanelLayout.findViewById(R.id.overlayPanel)
+        recentContainer = handlePanelLayout.findViewById(R.id.overlayRecentNotes)
+        draftInput = handlePanelLayout.findViewById(R.id.overlayDraftInput)
+        saveButton = handlePanelLayout.findViewById(R.id.overlaySaveButton)
+        recordButton = handlePanelLayout.findViewById(R.id.overlayRecordButton)
+        recordingStatus = handlePanelLayout.findViewById(R.id.overlayRecordingStatus)
 
         categoryButtons = mapOf(
-            NoteCategory.TODO to rootView.findViewById(R.id.overlayCategoryTodo),
-            NoteCategory.TASK to rootView.findViewById(R.id.overlayCategoryTask),
-            NoteCategory.REMINDER to rootView.findViewById(R.id.overlayCategoryReminder),
-            NoteCategory.NOTE to rootView.findViewById(R.id.overlayCategoryNote),
+            NoteCategory.TODO to handlePanelLayout.findViewById(R.id.overlayCategoryTodo),
+            NoteCategory.TASK to handlePanelLayout.findViewById(R.id.overlayCategoryTask),
+            NoteCategory.REMINDER to handlePanelLayout.findViewById(R.id.overlayCategoryReminder),
+            NoteCategory.NOTE to handlePanelLayout.findViewById(R.id.overlayCategoryNote),
         )
         priorityButtons = listOf(
-            rootView.findViewById(R.id.overlayPriorityLow),
-            rootView.findViewById(R.id.overlayPriorityMedium),
-            rootView.findViewById(R.id.overlayPriorityHigh),
-            rootView.findViewById(R.id.overlayPriorityUrgent),
+            handlePanelLayout.findViewById(R.id.overlayPriorityLow),
+            handlePanelLayout.findViewById(R.id.overlayPriorityMedium),
+            handlePanelLayout.findViewById(R.id.overlayPriorityHigh),
+            handlePanelLayout.findViewById(R.id.overlayPriorityUrgent),
         )
 
-        // Restore saved dock side
+        handlePanelLayout.layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+        )
+
+        rootView.addView(handlePanelLayout)
+
         serviceScope.launch {
             val cfg = appContainer.settingsStore.settingsFlow.first().overlay
             dockSide = runCatching { OverlayDockSide.valueOf(cfg.dockSide) }.getOrDefault(OverlayDockSide.RIGHT)
         }
 
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+
         layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            },
+            overlayType,
             baseWindowFlags,
             PixelFormat.TRANSLUCENT,
         ).apply {
@@ -138,19 +187,16 @@ class OverlayHandleService : Service() {
             y = 0
         }
 
-        // Create full-screen dismiss layer (invisible, behind panel)
-        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
         val dismissParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP or Gravity.START }
         val dl = View(this)
-        dl.setBackgroundColor(0x00000000)
+        dl.setBackgroundColor(0x66000000)
         dl.visibility = View.GONE
         dl.setOnClickListener { collapsePanel() }
         windowManager.addView(dl, dismissParams)
@@ -263,19 +309,17 @@ class OverlayHandleService : Service() {
                         val screenWidth = resources.displayMetrics.widthPixels
                         val midX = screenWidth / 2f
                         val isLeft = event.rawX < midX
-                        params.gravity = Gravity.CENTER_VERTICAL or if (isLeft) Gravity.START else Gravity.END
+                        dockSide = if (isLeft) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
                         params.y = startY + (event.rawY - touchY).toInt()
-                        windowManager.updateViewLayout(rootView, params)
+                        applyGravityAndLayout(params)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        // Snap to nearest edge
                         val screenWidth = resources.displayMetrics.widthPixels
                         val midX = screenWidth / 2f
                         val isLeft = event.rawX < midX
-                        params.gravity = Gravity.CENTER_VERTICAL or if (isLeft) Gravity.START else Gravity.END
-                        params.x = 0
-                        windowManager.updateViewLayout(rootView, params)
                         dockSide = if (isLeft) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
+                        params.x = 0
+                        applyGravityAndLayout(params)
                         serviceScope.launch {
                             val cfg = appContainer.settingsStore.settingsFlow.first().overlay
                             appContainer.settingsStore.saveOverlay(cfg.copy(dockSide = dockSide.name))
@@ -293,6 +337,32 @@ class OverlayHandleService : Service() {
                 return true
             }
         })
+    }
+
+    private fun applyGravityAndLayout(params: WindowManager.LayoutParams) {
+        val gravity = if (dockSide == OverlayDockSide.LEFT)
+            Gravity.CENTER_VERTICAL or Gravity.START
+        else
+            Gravity.CENTER_VERTICAL or Gravity.END
+
+        val child = rootView.getChildAt(0) as? LinearLayout ?: return
+        val handle = child.findViewById<View>(R.id.overlayHandle)
+        val panel = child.findViewById<View>(R.id.overlayPanel)
+
+        if (dockSide == OverlayDockSide.LEFT) {
+            if (child.indexOfChild(handle) < child.indexOfChild(panel)) {
+                child.removeView(handle)
+                child.addView(handle)
+            }
+        } else {
+            if (child.indexOfChild(handle) > child.indexOfChild(panel)) {
+                child.removeView(handle)
+                child.addView(handle, 0)
+            }
+        }
+
+        params.gravity = gravity
+        runCatching { windowManager.updateViewLayout(rootView, params) }
     }
 
     private fun observeNotes() {
@@ -315,12 +385,27 @@ class OverlayHandleService : Service() {
         val expanded = overlayState.mode != OverlayMode.COLLAPSED
         panelView.visibility = if (expanded) View.VISIBLE else View.GONE
         dismissLayer?.visibility = if (expanded) View.VISIBLE else View.GONE
-        // Dock side gravity
         layoutParams?.let { p ->
             p.gravity = if (dockSide == OverlayDockSide.LEFT)
                 Gravity.CENTER_VERTICAL or Gravity.START
             else
                 Gravity.CENTER_VERTICAL or Gravity.END
+            val child = rootView.getChildAt(0) as? LinearLayout
+            if (child != null) {
+                val handle = child.findViewById<View>(R.id.overlayHandle)
+                val panel = child.findViewById<View>(R.id.overlayPanel)
+                if (dockSide == OverlayDockSide.LEFT) {
+                    if (child.indexOfChild(handle) < child.indexOfChild(panel)) {
+                        child.removeView(handle)
+                        child.addView(handle)
+                    }
+                } else {
+                    if (child.indexOfChild(handle) > child.indexOfChild(panel)) {
+                        child.removeView(handle)
+                        child.addView(handle, 0)
+                    }
+                }
+            }
             runCatching { windowManager.updateViewLayout(rootView, p) }
         }
         recordButton.setImageResource(if (overlayState.isRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now)
@@ -502,4 +587,9 @@ class OverlayHandleService : Service() {
     }
 
     private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val CHANNEL_ID = "ydoc_overlay_channel"
+        private const val NOTIFICATION_ID = 2001
+    }
 }

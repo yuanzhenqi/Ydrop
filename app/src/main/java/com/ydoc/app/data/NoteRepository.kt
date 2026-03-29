@@ -1,6 +1,7 @@
 package com.ydoc.app.data
 
 import com.ydoc.app.data.local.NoteDao
+import com.ydoc.app.data.local.TombstoneDao
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NoteColorToken
 import com.ydoc.app.model.Note
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.map
 
 class NoteRepository(
     private val noteDao: NoteDao,
+    private val tombstoneDao: TombstoneDao,
 ) {
     fun observeNotes(): Flow<List<Note>> = noteDao.observeAll().map { notes -> notes.map { it.toModel() } }
 
@@ -97,8 +99,13 @@ class NoteRepository(
         noteDao.updateSyncMetadata(noteId, NoteStatus.SYNCING.name, null, null)
     }
 
-    suspend fun markSynced(noteId: String) {
-        noteDao.updateSyncMetadata(noteId, NoteStatus.SYNCED.name, System.currentTimeMillis(), null)
+    suspend fun markSynced(noteId: String, remotePath: String? = null) {
+        val entity = noteDao.getById(noteId)
+        if (remotePath != null && entity != null) {
+            noteDao.upsert(entity.copy(status = NoteStatus.SYNCED.name, lastSyncedAt = System.currentTimeMillis(), syncError = null, remotePath = remotePath))
+        } else {
+            noteDao.updateSyncMetadata(noteId, NoteStatus.SYNCED.name, System.currentTimeMillis(), null)
+        }
     }
 
     suspend fun markFailed(noteId: String, error: String?) {
@@ -180,7 +187,17 @@ class NoteRepository(
 
     suspend fun deleteNote(noteId: String) {
         noteDao.deleteById(noteId)
+        tombstoneDao.insert(com.ydoc.app.data.local.TombstoneEntity(noteId, System.currentTimeMillis()))
     }
 
     suspend fun pendingNotes(): List<Note> = noteDao.getPendingSync().map { it.toModel() }
+
+    suspend fun getNoteByRemotePath(remotePath: String): Note? = noteDao.getByRemotePath(remotePath)?.toModel()
+
+    suspend fun upsertFromRemote(note: Note) {
+        noteDao.upsert(note.toEntity())
+        tombstoneDao.deleteById(note.id)
+    }
+
+    suspend fun getTombstoneIds(): List<String> = tombstoneDao.getAllIds()
 }

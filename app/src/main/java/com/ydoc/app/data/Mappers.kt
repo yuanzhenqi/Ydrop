@@ -41,6 +41,8 @@ fun NoteEntity.toModel(): Note =
         transcriptionUpdatedAt = transcriptionUpdatedAt,
         syncError = syncError,
         pinned = pinned,
+        remotePath = remotePath,
+        lastPulledAt = lastPulledAt,
     )
 
 fun Note.toEntity(): NoteEntity =
@@ -68,6 +70,8 @@ fun Note.toEntity(): NoteEntity =
         transcriptionUpdatedAt = transcriptionUpdatedAt,
         syncError = syncError,
         pinned = pinned,
+        remotePath = remotePath,
+        lastPulledAt = lastPulledAt,
     )
 
 fun SyncTargetEntity.toModelOrNull(): SyncTarget? {

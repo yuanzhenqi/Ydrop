@@ -29,4 +29,7 @@ interface NoteDao {
 
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("SELECT * FROM notes WHERE remotePath = :remotePath LIMIT 1")
+    suspend fun getByRemotePath(remotePath: String): NoteEntity?
 }

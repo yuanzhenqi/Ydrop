@@ -7,7 +7,9 @@ import com.ydoc.app.model.WebDavConfig
 import java.io.IOException
 import java.io.File
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
 import java.util.Base64
+import java.util.Locale
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -88,6 +90,105 @@ class WebDavSyncClient(
         Unit
     }.recoverCatching { throwable ->
         throw enrichError(throwable)
+    }
+
+    override suspend fun listRemote(target: SyncTarget): Result<List<RemoteFileInfo>> = runCatching {
+        val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
+        require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
+        val folder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
+        val folderUrl = config.baseUrl.trimEnd('/') + "/" + folder
+        val authHeader = authHeader(config)
+        val propfindBody = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <d:propfind xmlns:d="DAV:">
+                <d:prop>
+                    <d:getlastmodified/>
+                </d:prop>
+            </d:propfind>
+        """.trimIndent()
+        val request = Request.Builder()
+            .url(folderUrl)
+            .method("PROPFIND", propfindBody.toRequestBody("application/xml; charset=utf-8".toMediaType()))
+            .header("Depth", "1")
+            .apply { authHeader?.let { header("Authorization", it) } }
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (!response.isSuccessful && response.code != 207) {
+                error(responseMessage("WebDAV 列出文件失败", response.code, responseBody))
+            }
+            parsePropfindResponse(responseBody, folder)
+        }
+    }.recoverCatching { throwable ->
+        throw enrichError(throwable)
+    }
+
+    override suspend fun pull(target: SyncTarget, remotePath: String): Result<String> = runCatching {
+        val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
+        require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
+        val authHeader = authHeader(config)
+        val url = if (remotePath.startsWith("http")) remotePath else config.baseUrl.trimEnd('/') + "/" + remotePath
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .apply { authHeader?.let { header("Authorization", it) } }
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string()
+            check(response.isSuccessful && body != null) {
+                responseMessage("WebDAV 下载失败", response.code, body.orEmpty())
+            }
+            body
+        }
+    }.recoverCatching { throwable ->
+        throw enrichError(throwable)
+    }
+
+    override suspend fun deleteByPath(target: SyncTarget, remotePath: String): Result<Unit> = runCatching {
+        val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
+        val authHeader = authHeader(config)
+        val url = if (remotePath.startsWith("http")) remotePath else config.baseUrl.trimEnd('/') + "/" + remotePath
+        deleteRemoteFile(url, authHeader)
+    }.recoverCatching { throwable ->
+        throw enrichError(throwable)
+    }
+
+    private fun parsePropfindResponse(xml: String, folder: String): List<RemoteFileInfo> {
+        val results = mutableListOf<RemoteFileInfo>()
+        val hrefPattern = Regex("<[^:>]*:href[^>]*>([^<]+)</[^:>]*:href>", RegexOption.IGNORE_CASE)
+        val lmPattern = Regex("<[^:>]*:getlastmodified[^>]*>([^<]+)</[^:>]*:getlastmodified>", RegexOption.IGNORE_CASE)
+        val responseRegexOptions: Set<RegexOption> = setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        val responsePattern = Regex("<[^:>]*:response>(.*?)</[^:>]*:response>", responseRegexOptions)
+
+        val responses: List<MatchResult> = responsePattern.findAll(xml).toList()
+        for (i in responses.indices) {
+            val match = responses[i]
+            val respText = match.groupValues[1]
+            val hrefMatch = hrefPattern.find(respText)
+            if (hrefMatch == null) continue
+            val href = java.net.URLDecoder.decode(hrefMatch.groupValues[1].trim(), "UTF-8")
+            if (!href.endsWith(".md")) continue
+            val fileName = href.substringAfterLast('/')
+            val path = "$folder/$fileName"
+            val lmMatch = lmPattern.find(respText)
+            val lastModified = lmMatch?.let { parseHttpDate(it.groupValues[1].trim()) }
+            results.add(RemoteFileInfo(path = path, lastModified = lastModified))
+        }
+        return results
+    }
+
+    private fun parseHttpDate(dateStr: String): Long? {
+        val formats = listOf(
+            SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss Z", Locale.US),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US),
+        )
+        for (fmt in formats) {
+            try {
+                return fmt.parse(dateStr)?.time
+            } catch (_: Exception) { }
+        }
+        return null
     }
 
     private fun authHeader(config: WebDavConfig): String? =

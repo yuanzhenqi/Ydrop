@@ -22,6 +22,7 @@ import com.ydoc.app.model.SyncType
 import com.ydoc.app.model.VolcengineConfig
 import com.ydoc.app.model.WebDavConfig
 import com.ydoc.app.recording.RecordingService
+import com.ydoc.app.sync.BidirectionalSyncResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -285,8 +286,22 @@ class AppViewModel(
     fun syncNow() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSyncing = true)
-            withContext(Dispatchers.IO) { container.syncOrchestrator.syncPending() }
-                .onSuccess { count -> _uiState.value = _uiState.value.copy(message = if (count > 0) "已同步 $count 条记录。" else "没有可同步的记录，或尚未启用 WebDAV。") }
+            val syncResult = withContext(Dispatchers.IO) {
+                val biResult = container.syncOrchestrator.syncBidirectional()
+                if (biResult.isFailure) {
+                    val fallback = container.syncOrchestrator.syncPending()
+                    fallback.map { count -> BidirectionalSyncResult(pushed = count) }
+                } else {
+                    biResult
+                }
+            }
+            syncResult
+                .onSuccess { r ->
+                    val parts = mutableListOf<String>()
+                    if (r.pushed > 0) parts.add("推送 ${r.pushed} 条")
+                    if (r.pulled > 0) parts.add("拉取 ${r.pulled} 条")
+                    _uiState.value = _uiState.value.copy(message = if (parts.isEmpty()) "没有可同步的记录。" else parts.joinToString("，") + "。")
+                }
                 .onFailure { _uiState.value = _uiState.value.copy(message = it.message ?: "同步失败。") }
             _uiState.value = _uiState.value.copy(isSyncing = false)
         }
@@ -394,6 +409,11 @@ class AppViewModel(
                 container.settingsStore.saveOverlay(snapshot.overlay)
                 container.settingsStore.saveRelay(snapshot.relay)
                 container.settingsStore.saveVolcengine(snapshot.volcengine)
+                if (snapshot.webDavEnabled && snapshot.webDav.autoSync) {
+                    container.syncScheduler.enqueuePeriodicSync(snapshot.webDav.wifiOnly)
+                } else {
+                    container.syncScheduler.cancelPeriodicSync()
+                }
             }.onSuccess {
                 _uiState.value = _uiState.value.copy(settings = _uiState.value.settings.copy(hasUnsavedChanges = false), message = "同步、中转与火山设置已保存。")
             }.onFailure {

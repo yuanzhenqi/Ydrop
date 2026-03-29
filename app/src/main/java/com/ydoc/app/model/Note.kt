@@ -24,6 +24,8 @@ data class Note(
     val transcriptionUpdatedAt: Long?,
     val syncError: String?,
     val pinned: Boolean,
+    val remotePath: String? = null,
+    val lastPulledAt: Long? = null,
 )
 
 enum class NoteSource {

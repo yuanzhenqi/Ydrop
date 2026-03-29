@@ -11,10 +11,10 @@ class SyncWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val container = AppContainer(applicationContext)
-        return container.syncOrchestrator.syncPending()
-            .fold(
-                onSuccess = { Result.success() },
-                onFailure = { Result.retry() },
-            )
+        val biResult = container.syncOrchestrator.syncBidirectional().getOrElse {
+            return container.syncOrchestrator.syncPending()
+                .fold(onSuccess = { Result.success() }, onFailure = { Result.retry() })
+        }
+        return if (biResult.failed > 0) Result.retry() else Result.success()
     }
 }

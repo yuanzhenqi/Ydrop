@@ -36,11 +36,12 @@ class AppContainer(context: Context) {
         WebDavSyncClient(httpClient, markdownFormatter),
     )
 
-    val noteRepository = NoteRepository(database.noteDao())
+    val noteRepository = NoteRepository(database.noteDao(), database.tombstoneDao())
     val syncTargetRepository = SyncTargetRepository(database.syncTargetDao())
     val syncOrchestrator = SyncOrchestrator(
         noteRepository = noteRepository,
         syncTargetRepository = syncTargetRepository,
+        formatter = markdownFormatter,
         clients = syncClients,
     )
     val transcriptionOrchestrator = TranscriptionOrchestrator(
