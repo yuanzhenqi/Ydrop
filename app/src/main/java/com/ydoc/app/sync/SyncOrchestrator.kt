@@ -69,7 +69,7 @@ class SyncOrchestrator(
             }
             val remoteFiles = remoteFilesResult.getOrThrow()
 
-            val remoteParsed = mutableMapOf<String, Pair<String, RemoteFileInfo>>()
+            val remoteByNoteId = mutableMapOf<String, Pair<String, RemoteFileInfo>>()
             for (rfi in remoteFiles) {
                 val contentResult = client.pull(target, rfi.path)
                 if (contentResult.isFailure) {
@@ -80,14 +80,14 @@ class SyncOrchestrator(
                 val content = contentResult.getOrThrow()
                 val id = formatter.extractId(content)
                 if (id != null) {
-                    remoteParsed[id] = Pair(content, rfi)
+                    remoteByNoteId[id] = Pair(content, rfi)
                 }
             }
 
             val allLocalNotes = noteRepository.observeNotes().first()
             val localById = allLocalNotes.associateBy { it.id }
 
-            for ((remoteId, pair) in remoteParsed) {
+            for ((remoteId, pair) in remoteByNoteId) {
                 val (content, rfi) = pair
                 val local = localById[remoteId]
                 if (local != null) {
@@ -97,10 +97,16 @@ class SyncOrchestrator(
                         continue
                     }
                     if (remoteNote.updatedAt > local.updatedAt) {
-                        noteRepository.upsertFromRemote(remoteNote)
+                        val merged = remoteNote.copy(remotePath = rfi.path)
+                        noteRepository.upsertFromRemote(merged)
                         result.pulled++
-                        AppLogger.overlay("Sync pulled remote note id=$remoteId")
+                        AppLogger.overlay("Sync: pulled remote update for id=$remoteId")
                     } else if (local.updatedAt > remoteNote.updatedAt && local.status != NoteStatus.SYNCED) {
+                        if (rfi.path != buildRemotePath(local, target)) {
+                            client.deleteByPath(target, rfi.path).onFailure {
+                                AppLogger.error("YDOC_SYNC", "删除旧远端文件失败: ${rfi.path}", it)
+                            }
+                        }
                         pushNote(local, client, target, result)
                     }
                 } else {
@@ -109,30 +115,38 @@ class SyncOrchestrator(
                         if (remoteNote != null) {
                             noteRepository.upsertFromRemote(remoteNote)
                             result.pulled++
-                            AppLogger.overlay("Sync pulled new remote note id=$remoteId")
+                            AppLogger.overlay("Sync: pulled new remote note id=$remoteId")
                         }
                     }
                 }
             }
 
             for (note in allLocalNotes) {
-                if (note.status == NoteStatus.SYNCED && note.id in remoteParsed.keys) continue
-                if (note.status == NoteStatus.SYNCED && note.remotePath != null) continue
-                if (note.id in remoteParsed.keys) {
-                    val (_, rfi) = remoteParsed[note.id]!!
-                    val remoteNote = formatter.parseFromMarkdown(
-                        client.pull(target, rfi.path).getOrDefault(""), rfi.path,
-                    )
-                    if (remoteNote != null && note.updatedAt > remoteNote.updatedAt) {
+                if (note.id in tombstoneIds) continue
+                if (note.status == NoteStatus.SYNCED && note.id in remoteByNoteId.keys) continue
+
+                if (note.id in remoteByNoteId.keys) {
+                    val (_, rfi) = remoteByNoteId[note.id]!!
+                    if (note.status != NoteStatus.SYNCED) {
+                        if (rfi.path != buildRemotePath(note, target)) {
+                            client.deleteByPath(target, rfi.path).onFailure {
+                                AppLogger.error("YDOC_SYNC", "删除旧远端文件失败: ${rfi.path}", it)
+                            }
+                        }
                         pushNote(note, client, target, result)
                     }
                 } else {
+                    if (note.remotePath != null) {
+                        client.deleteByPath(target, note.remotePath).onFailure {
+                            AppLogger.error("YDOC_SYNC", "删除旧远端文件失败: ${note.remotePath}", it)
+                        }
+                    }
                     pushNote(note, client, target, result)
                 }
             }
 
             for (tombstoneId in tombstoneIds) {
-                val pair = remoteParsed[tombstoneId]
+                val pair = remoteByNoteId[tombstoneId]
                 if (pair != null) {
                     val (_, rfi) = pair
                     client.deleteByPath(target, rfi.path).onFailure {
@@ -167,6 +181,15 @@ class SyncOrchestrator(
     private suspend fun syncOne(note: Note, targets: List<SyncTarget>): Boolean {
         noteRepository.markSyncing(note.id)
         val syncResults = targets.map { target ->
+            if (note.remotePath != null) {
+                val client = clientMap[target.type.name] ?: error("Missing client for ${target.type}")
+                val newPath = buildRemotePath(note, target)
+                if (newPath != null && note.remotePath != newPath) {
+                    client.deleteByPath(target, note.remotePath).onFailure {
+                        AppLogger.error("YDOC_SYNC", "删除旧远端文件失败: ${note.remotePath}", it)
+                    }
+                }
+            }
             val client = clientMap[target.type.name] ?: error("Missing client for ${target.type}")
             client.push(note, target)
         }
