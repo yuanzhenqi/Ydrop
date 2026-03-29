@@ -225,7 +225,7 @@ private fun YDocScreen(
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text(if (showSettings) "设置" else "YDoc") },
+                title = { Text(if (showSettings) "设置" else "Ydrop") },
                 actions = {
                     IconButton(onClick = { if (showSettings) onCloseSettings() else onOpenSettings() }) {
                         Icon(Icons.Rounded.Settings, contentDescription = "设置")

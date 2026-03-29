@@ -25,7 +25,7 @@ class RecordingService : Service() {
     private fun buildNotification(): Notification {
         createChannel()
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("YDoc 正在录音")
+            .setContentTitle("Ydrop 正在录音")
             .setContentText("录音进行中，请返回应用停止并保存。")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
