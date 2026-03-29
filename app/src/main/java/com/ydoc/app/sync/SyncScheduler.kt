@@ -31,21 +31,20 @@ class SyncScheduler(
         )
     }
 
-    fun enqueuePeriodicSync(wifiOnly: Boolean) {
+    fun enqueuePeriodicSync(wifiOnly: Boolean, intervalMinutes: Int = 15) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
 
-        val request = PeriodicWorkRequestBuilder<SyncWorker>(
-            SYNC_INTERVAL_MINUTES, TimeUnit.MINUTES,
-        )
+        val interval = intervalMinutes.toLong().coerceIn(15, 1440)
+        val request = PeriodicWorkRequestBuilder<SyncWorker>(interval, TimeUnit.MINUTES)
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
+            ExistingPeriodicWorkPolicy.REPLACE,
             request,
         )
     }
@@ -57,6 +56,5 @@ class SyncScheduler(
     companion object {
         private const val UNIQUE_NAME = "ydoc-sync-retry"
         private const val PERIODIC_NAME = "ydoc-sync-periodic"
-        private const val SYNC_INTERVAL_MINUTES = 15L
     }
 }

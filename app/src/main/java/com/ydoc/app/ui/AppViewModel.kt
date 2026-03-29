@@ -410,7 +410,7 @@ class AppViewModel(
                 container.settingsStore.saveRelay(snapshot.relay)
                 container.settingsStore.saveVolcengine(snapshot.volcengine)
                 if (snapshot.webDavEnabled && snapshot.webDav.autoSync) {
-                    container.syncScheduler.enqueuePeriodicSync(snapshot.webDav.wifiOnly)
+                    container.syncScheduler.enqueuePeriodicSync(snapshot.webDav.wifiOnly, snapshot.webDav.syncIntervalMinutes)
                 } else {
                     container.syncScheduler.cancelPeriodicSync()
                 }

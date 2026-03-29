@@ -30,6 +30,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -543,6 +545,28 @@ private fun WebDavSettingsSection(
             Text("自动同步", modifier = Modifier.weight(1f))
             Switch(checked = settings.webDav.autoSync, onCheckedChange = { onWebDavChange { current -> current.copy(autoSync = it) } })
         }
+        if (settings.webDav.autoSync) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("同步间隔", modifier = Modifier.weight(1f))
+                val intervals = listOf(5 to "5 分钟", 15 to "15 分钟", 30 to "30 分钟", 60 to "1 小时")
+                var expanded by remember { mutableStateOf(false) }
+                val currentLabel = intervals.firstOrNull { it.first == settings.webDav.syncIntervalMinutes }?.second ?: "${settings.webDav.syncIntervalMinutes} 分钟"
+                Box {
+                    AssistChip(onClick = { expanded = true }, label = { Text(currentLabel) })
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        intervals.forEach { (minutes, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    onWebDavChange { current -> current.copy(syncIntervalMinutes = minutes) }
+                                    expanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("仅 Wi-Fi 同步", modifier = Modifier.weight(1f))
             Switch(checked = settings.webDav.wifiOnly, onCheckedChange = { onWebDavChange { current -> current.copy(wifiOnly = it) } })
@@ -736,13 +760,6 @@ private fun NoteCard(
             }
             if (!note.relayUrl.isNullOrBlank()) {
                 Text("中转外链已生成", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-            }
-            if (!note.transcript.isNullOrBlank()) {
-                Text(
-                    text = note.transcript,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
             }
             Text(
                 text = "更新时间 ${formatTime(note.updatedAt)}" + (note.lastSyncedAt?.let { "  |  同步时间 ${formatTime(it)}" } ?: ""),

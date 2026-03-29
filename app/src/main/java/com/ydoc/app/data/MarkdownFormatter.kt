@@ -28,13 +28,13 @@ class MarkdownFormatter {
 
     fun fileName(note: Note): String {
         val date = fileDateFormat.format(Date(note.createdAt))
-        val category = categoryLabel(note.category)
+        val source = sourceLabel(note.source)
         val titleSlug = note.title
             .replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_")
             .take(20)
             .trimEnd('_')
         val shortId = note.id.takeLast(6)
-        return "${date}_${category}_${titleSlug}_${shortId}.md"
+        return "${date}_${source}_${titleSlug}_${shortId}.md"
     }
 
     fun extractIdFromFileName(fileName: String): String? {

@@ -49,6 +49,7 @@ data class WebDavConfig(
     val folder: String = "ydoc/inbox",
     val autoSync: Boolean = true,
     val wifiOnly: Boolean = false,
+    val syncIntervalMinutes: Int = 15,
 ) : SyncConfig
 
 data class SyncSettingsState(
