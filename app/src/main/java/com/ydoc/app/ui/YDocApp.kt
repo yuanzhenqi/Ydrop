@@ -691,6 +691,8 @@ private fun NoteCard(
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
     val bodyText = note.transcript?.takeIf { it.isNotBlank() } ?: note.content
+    var isOverflowing by remember(note.id) { mutableStateOf(false) }
+    val maxPreviewLines = 6
     Card(
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -709,28 +711,19 @@ private fun NoteCard(
             Text(
                 bodyText,
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (expanded) Int.MAX_VALUE else 4,
+                maxLines = if (expanded) Int.MAX_VALUE else maxPreviewLines,
                 overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                onTextLayout = { result ->
+                    if (!expanded) {
+                        isOverflowing = result.hasVisualOverflow
+                    }
+                },
             )
-            AnimatedVisibility(
-                visible = !expanded && bodyText.length > 80,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
+            if (isOverflowing || expanded) {
                 AssistChip(
-                    onClick = { expanded = true },
-                    label = { Text("展开全文") },
-                )
-            }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                AssistChip(
-                    onClick = { expanded = false },
-                    label = { Text("收起") },
+                    onClick = { expanded = !expanded },
+                    label = { Text(if (expanded) "收起" else "展开全文") },
                 )
             }
             HorizontalDivider()
