@@ -13,5 +13,6 @@
       }
     }
   },
-  "model": "new_api/glm-5.1"
+  "model": "new_api/glm-5.1",
+  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git"]
 }

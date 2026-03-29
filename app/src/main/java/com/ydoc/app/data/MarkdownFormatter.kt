@@ -37,6 +37,14 @@ class MarkdownFormatter {
         return "${date}_${category}_${titleSlug}_${shortId}.md"
     }
 
+    fun extractIdFromFileName(fileName: String): String? {
+        val name = fileName.removeSuffix(".md")
+        val lastUnderscore = name.lastIndexOf('_')
+        if (lastUnderscore < 0) return null
+        val shortId = name.substring(lastUnderscore + 1)
+        return if (shortId.length == 6) shortId else null
+    }
+
     fun render(note: Note): String = buildString {
         val createdDisplay = displayDateFormat.format(Date(note.createdAt))
         val updatedDisplay = displayDateFormat.format(Date(note.updatedAt))

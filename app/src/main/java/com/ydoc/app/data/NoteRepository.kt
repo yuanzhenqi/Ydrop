@@ -195,7 +195,30 @@ class NoteRepository(
     suspend fun getNoteByRemotePath(remotePath: String): Note? = noteDao.getByRemotePath(remotePath)?.toModel()
 
     suspend fun upsertFromRemote(note: Note) {
-        noteDao.upsert(note.toEntity())
+        val existing = noteDao.getById(note.id)?.toModel()
+        if (existing != null) {
+            val merged = existing.copy(
+                title = note.title,
+                content = note.content,
+                source = note.source,
+                category = note.category,
+                priority = note.priority,
+                colorToken = note.colorToken,
+                status = NoteStatus.SYNCED,
+                updatedAt = note.updatedAt,
+                lastSyncedAt = System.currentTimeMillis(),
+                syncError = null,
+                transcript = note.transcript ?: existing.transcript,
+                transcriptionStatus = note.transcriptionStatus,
+                transcriptionError = note.transcriptionError,
+                remotePath = note.remotePath,
+                lastPulledAt = System.currentTimeMillis(),
+                relayUrl = note.relayUrl ?: existing.relayUrl,
+            )
+            noteDao.upsert(merged.toEntity())
+        } else {
+            noteDao.upsert(note.toEntity())
+        }
         tombstoneDao.deleteById(note.id)
     }
 
