@@ -7,3 +7,4 @@ local.properties
 .gstack/
 relay_service/.env
 relay_service/app/__pycache__/
+.kotlin/
