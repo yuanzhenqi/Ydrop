@@ -165,9 +165,10 @@ class WebDavSyncClient(
         for (i in responses.indices) {
             val match = responses[i]
             val respText = match.groupValues[1]
-            val hrefMatch = hrefPattern.find(respText)
-            if (hrefMatch == null) continue
-            val href = java.net.URLDecoder.decode(hrefMatch.groupValues[1].trim(), "UTF-8")
+            val allHrefs = hrefPattern.findAll(respText).toList()
+            if (allHrefs.isEmpty()) continue
+            val lastHrefMatch = allHrefs.last()
+            val href = java.net.URLDecoder.decode(lastHrefMatch.groupValues[1].trim(), "UTF-8")
             if (!href.endsWith(".md")) continue
             val fileName = href.substringAfterLast('/')
             val path = "$folder/$fileName"
