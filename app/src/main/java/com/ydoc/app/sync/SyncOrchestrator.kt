@@ -166,13 +166,18 @@ class SyncOrchestrator(
     }
 
     private suspend fun pushNote(note: Note, client: SyncClient, target: SyncTarget, result: BidirectionalSyncResult) {
+        val newPath = buildRemotePath(note, target)
+        if (note.remotePath != null && note.remotePath != newPath) {
+            client.deleteByPath(target, note.remotePath).onFailure {
+                Log.w(TAG, "Failed to delete old remote file ${note.remotePath}: ${it.message}")
+            }
+        }
         noteRepository.markSyncing(note.id)
         val pushResult = client.push(note, target)
         if (pushResult.isSuccess) {
-            val rp = buildRemotePath(note, target)
-            noteRepository.markSynced(note.id, rp)
+            noteRepository.markSynced(note.id, newPath)
             result.pushed++
-            Log.i(TAG, "PUSHED id=${note.id} to $rp")
+            Log.i(TAG, "PUSHED id=${note.id} to $newPath")
         } else {
             val err = pushResult.exceptionOrNull()?.message
             noteRepository.markFailed(note.id, err)
@@ -190,12 +195,21 @@ class SyncOrchestrator(
 
     private suspend fun syncOne(note: Note, targets: List<SyncTarget>): Boolean {
         noteRepository.markSyncing(note.id)
+        val newPath = targets.firstOrNull()?.let { buildRemotePath(note, it) }
+        if (note.remotePath != null && newPath != null && note.remotePath != newPath) {
+            for (target in targets) {
+                val client = clientMap[target.type.name] ?: continue
+                client.deleteByPath(target, note.remotePath).onFailure {
+                    Log.w(TAG, "Failed to delete old remote ${note.remotePath}: ${it.message}")
+                }
+            }
+        }
         val syncResults = targets.map { target ->
             val client = clientMap[target.type.name] ?: error("Missing client for ${target.type}")
             client.push(note, target)
         }
         return if (syncResults.all { it.isSuccess }) {
-            noteRepository.markSynced(note.id)
+            noteRepository.markSynced(note.id, newPath)
             true
         } else {
             val errorMessage = syncResults.firstOrNull { it.isFailure }?.exceptionOrNull()?.message

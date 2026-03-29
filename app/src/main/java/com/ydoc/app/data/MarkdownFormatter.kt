@@ -75,16 +75,10 @@ class MarkdownFormatter {
 
         appendLine("## 记录内容")
         appendLine()
-        if (note.source == NoteSource.VOICE && !note.transcript.isNullOrBlank()) {
-            appendLine("**AI 转写文本：**")
-            appendLine()
+        if (note.source == NoteSource.VOICE && !note.transcript.isNullOrBlank() && note.content != note.transcript) {
+            appendLine(note.content.trim())
+        } else if (note.source == NoteSource.VOICE && !note.transcript.isNullOrBlank()) {
             appendLine(note.transcript.trim())
-            appendLine()
-            if (note.content.isNotBlank() && note.content != "语音记录，等待后续转写。") {
-                appendLine("**原始内容：**")
-                appendLine()
-                appendLine(note.content.trim())
-            }
         } else {
             appendLine(note.content.trim())
         }
@@ -194,21 +188,26 @@ class MarkdownFormatter {
     private fun extractBody(content: String): String {
         val afterFrontmatter = skipFrontmatter(content)
         val lines = afterFrontmatter.trimStart().lines()
-        var pastTitle = false
-        var pastMeta = false
         val bodyLines = mutableListOf<String>()
-        for (line in lines) {
-            if (!pastTitle) {
-                if (line.startsWith("# ")) pastTitle = true
-                continue
-            }
-            if (!pastMeta) {
-                if (line.startsWith("> ")) continue
-                if (line.isBlank() && !pastMeta) { pastMeta = true; continue }
-                pastMeta = true
-            }
-            if (line.startsWith("## 记录内容") || line.isBlank() && bodyLines.isEmpty()) continue
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.startsWith("# ") || line.startsWith("## ")) { i++; continue }
+            if (line.startsWith("> ")) { i++; continue }
+            if (line.startsWith("**AI") || line.startsWith("**原始内容")) { i++; continue }
+            if (line.trim() == "---") { i++; continue }
+            if (line.isBlank() && bodyLines.isEmpty()) { i++; continue }
+            break
+        }
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.startsWith("# ") || line.startsWith("## ")) { i++; continue }
+            if (line.startsWith("> ")) { i++; continue }
+            if (line.startsWith("**AI") || line.startsWith("**原始内容")) { i++; continue }
+            if (line.trim() == "---") { i++; continue }
+            if (line.isBlank() && bodyLines.isEmpty()) { i++; continue }
             bodyLines.add(line)
+            i++
         }
         return bodyLines.joinToString("\n").trim()
     }

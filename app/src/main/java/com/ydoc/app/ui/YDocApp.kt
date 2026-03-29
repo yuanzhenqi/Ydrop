@@ -690,13 +690,23 @@ private fun NoteCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             AnimatedVisibility(
-                visible = bodyText.length > 120,
+                visible = !expanded && bodyText.length > 80,
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically(),
             ) {
                 AssistChip(
-                    onClick = { expanded = !expanded },
-                    label = { Text(if (expanded) "收起全文" else "展开全文") },
+                    onClick = { expanded = true },
+                    label = { Text("展开全文") },
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                AssistChip(
+                    onClick = { expanded = false },
+                    label = { Text("收起") },
                 )
             }
             HorizontalDivider()
