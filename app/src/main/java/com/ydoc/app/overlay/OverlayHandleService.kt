@@ -14,12 +14,11 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.view.inputmethod.InputMethodManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -30,12 +29,10 @@ import androidx.core.content.ContextCompat
 import com.ydoc.app.MainActivity
 import com.ydoc.app.R
 import com.ydoc.app.data.AppContainer
-import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.Note
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NotePriority
 import com.ydoc.app.model.OverlayDockSide
-import com.ydoc.app.model.TranscriptionStatus
 import com.ydoc.app.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +42,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 class OverlayHandleService : Service() {
     private lateinit var windowManager: WindowManager
@@ -56,7 +54,10 @@ class OverlayHandleService : Service() {
     private lateinit var draftInput: EditText
     private lateinit var saveButton: ImageButton
     private lateinit var recordButton: ImageButton
+    private lateinit var closeButton: ImageButton
     private lateinit var recordingStatus: TextView
+    private lateinit var togglePriority: TextView
+    private lateinit var priorityBar: LinearLayout
     private lateinit var priorityButtons: List<TextView>
     private lateinit var categoryButtons: Map<NoteCategory, TextView>
 
@@ -67,6 +68,7 @@ class OverlayHandleService : Service() {
     private var recordButtonHolding = false
     private var dockSide: OverlayDockSide = OverlayDockSide.RIGHT
     private var dismissLayer: View? = null
+    private var priorityVisible = false
 
     private val baseWindowFlags: Int
         get() = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -74,7 +76,6 @@ class OverlayHandleService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
 
     override fun onBind(intent: Intent?): IBinder? = null
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onCreate() {
@@ -94,24 +95,17 @@ class OverlayHandleService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         dismissLayer?.let { runCatching { windowManager.removeView(it) } }
-        if (::rootView.isInitialized) {
-            runCatching { windowManager.removeView(rootView) }
-        }
+        if (::rootView.isInitialized) runCatching { windowManager.removeView(rootView) }
         serviceScope.cancel()
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "悬浮助手",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
+            val channel = NotificationChannel(CHANNEL_ID, "Ydrop 悬浮助手", NotificationManager.IMPORTANCE_LOW).apply {
                 setShowBadge(false)
                 description = "保持悬浮把手运行"
             }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
@@ -119,13 +113,11 @@ class OverlayHandleService : Service() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val pending = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val pending = PendingIntent.getActivity(this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Ydrop 悬浮助手")
-            .setContentText("正在运行中")
+            .setContentTitle("Ydrop 悬浮助手正在运行中")
+            .setContentText("点击回到主界面")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pending)
             .setOngoing(true)
@@ -135,41 +127,37 @@ class OverlayHandleService : Service() {
 
     private fun createOverlay() {
         rootView = FrameLayout(this)
+        val inflated = LayoutInflater.from(this).inflate(R.layout.overlay_handle, null) as LinearLayout
 
-        val layoutInflater = LayoutInflater.from(this)
-        val handlePanelLayout = layoutInflater.inflate(R.layout.overlay_handle, null) as LinearLayout
-        handleView = handlePanelLayout.findViewById(R.id.overlayHandle)
-        panelView = handlePanelLayout.findViewById(R.id.overlayPanel)
-        recentContainer = handlePanelLayout.findViewById(R.id.overlayRecentNotes)
-        draftInput = handlePanelLayout.findViewById(R.id.overlayDraftInput)
-        saveButton = handlePanelLayout.findViewById(R.id.overlaySaveButton)
-        recordButton = handlePanelLayout.findViewById(R.id.overlayRecordButton)
-        recordingStatus = handlePanelLayout.findViewById(R.id.overlayRecordingStatus)
+        handleView = inflated.findViewById(R.id.overlayHandle)
+        panelView = inflated.findViewById(R.id.overlayPanel)
+        recentContainer = inflated.findViewById(R.id.overlayRecentNotes)
+        draftInput = inflated.findViewById(R.id.overlayDraftInput)
+        saveButton = inflated.findViewById(R.id.overlaySaveButton)
+        recordButton = inflated.findViewById(R.id.overlayRecordButton)
+        closeButton = inflated.findViewById(R.id.overlayCloseButton)
+        recordingStatus = inflated.findViewById(R.id.overlayRecordingStatus)
+        togglePriority = inflated.findViewById(R.id.overlayTogglePriority)
+        priorityBar = inflated.findViewById(R.id.overlayPriorityBar)
 
         categoryButtons = mapOf(
-            NoteCategory.TODO to handlePanelLayout.findViewById(R.id.overlayCategoryTodo),
-            NoteCategory.TASK to handlePanelLayout.findViewById(R.id.overlayCategoryTask),
-            NoteCategory.REMINDER to handlePanelLayout.findViewById(R.id.overlayCategoryReminder),
-            NoteCategory.NOTE to handlePanelLayout.findViewById(R.id.overlayCategoryNote),
+            NoteCategory.TODO to inflated.findViewById(R.id.overlayCategoryTodo),
+            NoteCategory.TASK to inflated.findViewById(R.id.overlayCategoryTask),
+            NoteCategory.REMINDER to inflated.findViewById(R.id.overlayCategoryReminder),
+            NoteCategory.NOTE to inflated.findViewById(R.id.overlayCategoryNote),
         )
         priorityButtons = listOf(
-            handlePanelLayout.findViewById(R.id.overlayPriorityLow),
-            handlePanelLayout.findViewById(R.id.overlayPriorityMedium),
-            handlePanelLayout.findViewById(R.id.overlayPriorityHigh),
-            handlePanelLayout.findViewById(R.id.overlayPriorityUrgent),
+            inflated.findViewById(R.id.overlayPriorityLow),
+            inflated.findViewById(R.id.overlayPriorityMedium),
+            inflated.findViewById(R.id.overlayPriorityHigh),
+            inflated.findViewById(R.id.overlayPriorityUrgent),
         )
 
-        handlePanelLayout.layoutParams = FrameLayout.LayoutParams(
+        inflated.layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT,
         )
-
-        rootView.addView(handlePanelLayout)
-
-        serviceScope.launch {
-            val cfg = appContainer.settingsStore.settingsFlow.first().overlay
-            dockSide = runCatching { OverlayDockSide.valueOf(cfg.dockSide) }.getOrDefault(OverlayDockSide.RIGHT)
-        }
+        rootView.addView(inflated)
 
         val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -178,27 +166,20 @@ class OverlayHandleService : Service() {
         layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            baseWindowFlags,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
-            x = 0
-            y = 0
-        }
+            overlayType, baseWindowFlags, PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.CENTER_VERTICAL or Gravity.END; x = 0; y = 0 }
 
+        val dl = View(this)
+        dl.setBackgroundColor(0x55000000)
+        dl.visibility = View.GONE
+        dl.setOnClickListener { collapsePanel() }
         val dismissParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP or Gravity.START }
-        val dl = View(this)
-        dl.setBackgroundColor(0x66000000)
-        dl.visibility = View.GONE
-        dl.setOnClickListener { collapsePanel() }
         windowManager.addView(dl, dismissParams)
         dismissLayer = dl
 
@@ -208,16 +189,17 @@ class OverlayHandleService : Service() {
     }
 
     private fun bindInteractions() {
+        closeButton.setOnClickListener { collapsePanel() }
+
         saveButton.setOnClickListener {
             val text = draftInput.text.toString().trim()
             if (text.isNotBlank()) {
                 serviceScope.launch {
                     appContainer.noteRepository.createTextNote(text, overlayState.selectedCategory, overlayState.selectedPriority)
                     appContainer.syncOrchestrator.syncPending()
-                    AppLogger.overlay("Overlay text note saved with category=${overlayState.selectedCategory}")
-                    overlayState = overlayState.copy(draftText = "", mode = OverlayMode.COLLAPSED)
                     draftInput.setText("")
                     exitTextInputMode()
+                    overlayState = overlayState.copy(draftText = "")
                     render()
                 }
             }
@@ -226,111 +208,67 @@ class OverlayHandleService : Service() {
         recordButton.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    if (!overlayState.isRecording) {
-                        recordButtonHolding = true
-                        vibrateHandle()
-                        startRecordingFromOverlay()
-                    }
+                    if (!overlayState.isRecording) { recordButtonHolding = true; vibrateHandle(); startRecordingFromOverlay() }
                     true
                 }
-
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (recordButtonHolding && overlayState.isRecording) {
-                        stopRecordingFromOverlay()
-                    }
-                    recordButtonHolding = false
-                    true
+                    if (recordButtonHolding && overlayState.isRecording) stopRecordingFromOverlay()
+                    recordButtonHolding = false; true
                 }
-
                 else -> true
             }
         }
 
-        draftInput.setOnClickListener {
-            enableInputFocus()
-            draftInput.requestFocus()
-            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(draftInput, InputMethodManager.SHOW_IMPLICIT)
-        }
         draftInput.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 enterTextInputMode()
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                imm.showSoftInput(draftInput, InputMethodManager.SHOW_IMPLICIT)
-            } else {
-                exitTextInputMode()
-            }
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(draftInput, InputMethodManager.SHOW_IMPLICIT)
+            } else exitTextInputMode()
         }
         draftInput.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_DONE
-
-        categoryButtons.forEach { (category, view) ->
-            view.setOnClickListener {
-                overlayState = overlayState.copy(selectedCategory = category)
-                AppLogger.overlay("Overlay category changed to $category")
-                render()
-            }
+        draftInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) { saveButton.performClick(); true } else false
         }
 
+        togglePriority.setOnClickListener {
+            priorityVisible = !priorityVisible
+            priorityBar.visibility = if (priorityVisible) View.VISIBLE else View.GONE
+            togglePriority.text = if (priorityVisible) "优先级 ▴" else "优先级 ▾"
+        }
+
+        categoryButtons.forEach { (category, view) ->
+            view.setOnClickListener { overlayState = overlayState.copy(selectedCategory = category); render() }
+        }
         priorityButtons.forEachIndexed { index, view ->
             view.setOnClickListener {
-                val priority = when (index) {
-                    0 -> NotePriority.LOW
-                    1 -> NotePriority.MEDIUM
-                    2 -> NotePriority.HIGH
-                    else -> NotePriority.URGENT
-                }
-                overlayState = overlayState.copy(selectedPriority = priority)
-                AppLogger.overlay("Overlay priority changed to $priority")
-                render()
+                val p = when (index) { 0 -> NotePriority.LOW; 1 -> NotePriority.MEDIUM; 2 -> NotePriority.HIGH; else -> NotePriority.URGENT }
+                overlayState = overlayState.copy(selectedPriority = p); render()
             }
         }
 
         handleView.setOnTouchListener(object : View.OnTouchListener {
-            private var startX = 0
-            private var startY = 0
-            private var touchX = 0f
-            private var touchY = 0f
-            private var moved = false
-
+            private var startY = 0; private var touchX = 0f; private var touchY = 0f; private var moved = false
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 val params = layoutParams ?: return false
                 when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        startX = params.x
-                        startY = params.y
-                        touchX = event.rawX
-                        touchY = event.rawY
-                        moved = false
-                    }
+                    MotionEvent.ACTION_DOWN -> { startY = params.y; touchX = event.rawX; touchY = event.rawY; moved = false }
                     MotionEvent.ACTION_MOVE -> {
-                        if (kotlin.math.abs(event.rawX - touchX) > 12 || kotlin.math.abs(event.rawY - touchY) > 12) {
-                            moved = true
-                        }
-                        val screenWidth = resources.displayMetrics.widthPixels
-                        val midX = screenWidth / 2f
-                        val isLeft = event.rawX < midX
-                        dockSide = if (isLeft) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
+                        if (abs(event.rawX - touchX) > 12 || abs(event.rawY - touchY) > 12) moved = true
+                        dockSide = if (event.rawX < resources.displayMetrics.widthPixels / 2f) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
                         params.y = startY + (event.rawY - touchY).toInt()
                         applyGravityAndLayout(params)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val screenWidth = resources.displayMetrics.widthPixels
-                        val midX = screenWidth / 2f
-                        val isLeft = event.rawX < midX
-                        dockSide = if (isLeft) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
-                        params.x = 0
-                        applyGravityAndLayout(params)
+                        dockSide = if (event.rawX < resources.displayMetrics.widthPixels / 2f) OverlayDockSide.LEFT else OverlayDockSide.RIGHT
+                        params.x = 0; applyGravityAndLayout(params)
                         serviceScope.launch {
                             val cfg = appContainer.settingsStore.settingsFlow.first().overlay
                             appContainer.settingsStore.saveOverlay(cfg.copy(dockSide = dockSide.name))
                         }
                         if (!moved) {
                             if (overlayState.mode == OverlayMode.COLLAPSED) {
-                                overlayState = overlayState.copy(mode = OverlayMode.EXPANDED)
-                                render()
-                            } else {
-                                collapsePanel()
-                            }
+                                overlayState = overlayState.copy(mode = OverlayMode.EXPANDED); render()
+                            } else collapsePanel()
                         }
                     }
                 }
@@ -340,37 +278,24 @@ class OverlayHandleService : Service() {
     }
 
     private fun applyGravityAndLayout(params: WindowManager.LayoutParams) {
-        val gravity = if (dockSide == OverlayDockSide.LEFT)
-            Gravity.CENTER_VERTICAL or Gravity.START
-        else
-            Gravity.CENTER_VERTICAL or Gravity.END
-
         val child = rootView.getChildAt(0) as? LinearLayout ?: return
         val handle = child.findViewById<View>(R.id.overlayHandle)
         val panel = child.findViewById<View>(R.id.overlayPanel)
-
         if (dockSide == OverlayDockSide.LEFT) {
-            if (child.indexOfChild(handle) < child.indexOfChild(panel)) {
-                child.removeView(handle)
-                child.addView(handle)
-            }
+            params.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            if (child.indexOfChild(handle) < child.indexOfChild(panel)) { child.removeView(handle); child.addView(handle) }
         } else {
-            if (child.indexOfChild(handle) > child.indexOfChild(panel)) {
-                child.removeView(handle)
-                child.addView(handle, 0)
-            }
+            params.gravity = Gravity.CENTER_VERTICAL or Gravity.END
+            if (child.indexOfChild(handle) > child.indexOfChild(panel)) { child.removeView(handle); child.addView(handle, 0) }
         }
-
-        params.gravity = gravity
         runCatching { windowManager.updateViewLayout(rootView, params) }
     }
 
     private fun observeNotes() {
         serviceScope.launch {
             appContainer.noteRepository.observeNotes().collectLatest { notes ->
-                overlayState = overlayState.copy(recentNotes = notes.take(5))
-                AppLogger.overlay("Overlay recent list refreshed count=${notes.take(5).size}")
-                renderRecentNotes(notes.take(5))
+                overlayState = overlayState.copy(recentNotes = notes.take(2))
+                renderRecentNotes(notes.take(2))
             }
         }
     }
@@ -381,208 +306,145 @@ class OverlayHandleService : Service() {
         render()
     }
 
+    private fun enterTextInputMode() {
+        if (overlayState.mode == OverlayMode.COLLAPSED) overlayState = overlayState.copy(mode = OverlayMode.EXPANDED)
+        layoutParams?.let { p ->
+            p.flags = p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            runCatching { windowManager.updateViewLayout(rootView, p) }
+        }
+    }
+
+    private fun exitTextInputMode() {
+        layoutParams?.let { p ->
+            p.flags = p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            runCatching { windowManager.updateViewLayout(rootView, p) }
+        }
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(draftInput.windowToken, 0)
+    }
+
     private fun render() {
         val expanded = overlayState.mode != OverlayMode.COLLAPSED
         panelView.visibility = if (expanded) View.VISIBLE else View.GONE
         dismissLayer?.visibility = if (expanded) View.VISIBLE else View.GONE
-        layoutParams?.let { p ->
-            p.gravity = if (dockSide == OverlayDockSide.LEFT)
-                Gravity.CENTER_VERTICAL or Gravity.START
-            else
-                Gravity.CENTER_VERTICAL or Gravity.END
-            val child = rootView.getChildAt(0) as? LinearLayout
-            if (child != null) {
-                val handle = child.findViewById<View>(R.id.overlayHandle)
-                val panel = child.findViewById<View>(R.id.overlayPanel)
-                if (dockSide == OverlayDockSide.LEFT) {
-                    if (child.indexOfChild(handle) < child.indexOfChild(panel)) {
-                        child.removeView(handle)
-                        child.addView(handle)
-                    }
-                } else {
-                    if (child.indexOfChild(handle) > child.indexOfChild(panel)) {
-                        child.removeView(handle)
-                        child.addView(handle, 0)
-                    }
-                }
-            }
-            runCatching { windowManager.updateViewLayout(rootView, p) }
+        layoutParams?.let { applyGravityAndLayout(it) }
+
+        if (overlayState.isRecording) {
+            recordButton.setImageResource(android.R.drawable.ic_media_pause)
+            recordButton.setBackgroundColor(0xFFEF4444.toInt())
+            recordingStatus.text = "录音中 ${overlayState.recordingSeconds}s"
+            recordingStatus.setTextColor(0xFFEF4444.toInt())
+        } else {
+            recordButton.setImageResource(android.R.drawable.ic_btn_speak_now)
+            recordButton.setBackgroundColor(0x00000000)
+            recordingStatus.text = "按住录音"
+            recordingStatus.setTextColor(0xFF6B7280.toInt())
         }
-        recordButton.setImageResource(if (overlayState.isRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now)
-        recordingStatus.text = if (overlayState.isRecording) "录音中 ${overlayState.recordingSeconds}s" else "长按把手直接录音"
-        serviceScope.launch {
-            val overlayConfig = appContainer.settingsStore.settingsFlow.first().overlay
-            handleView.alpha = overlayConfig.handleAlpha
-            handleView.layoutParams = handleView.layoutParams.apply {
-                width = dpToPx(overlayConfig.handleSizeDp)
-                height = dpToPx((overlayConfig.handleSizeDp * 3.5f).toInt())
-            }
-            handleView.requestLayout()
-        }
+
         categoryButtons.forEach { (category, view) ->
-            view.isSelected = overlayState.selectedCategory == category
-            view.alpha = if (view.isSelected) 1f else 0.55f
+            val selected = overlayState.selectedCategory == category
+            view.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFF374151.toInt())
+            view.setBackgroundColor(if (selected) categoryColor(category) else 0xFFF3F4F6.toInt())
         }
         priorityButtons.forEachIndexed { index, view ->
-            val priority = when (index) {
-                0 -> NotePriority.LOW
-                1 -> NotePriority.MEDIUM
-                2 -> NotePriority.HIGH
-                else -> NotePriority.URGENT
-            }
-            view.alpha = if (overlayState.selectedPriority == priority) 1f else 0.45f
+            val p = when (index) { 0 -> NotePriority.LOW; 1 -> NotePriority.MEDIUM; 2 -> NotePriority.HIGH; else -> NotePriority.URGENT }
+            val selected = overlayState.selectedPriority == p
+            view.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt())
+            view.setBackgroundColor(if (selected) priorityColor(p) else 0xFFE5E7EB.toInt())
+        }
+
+        serviceScope.launch {
+            val cfg = appContainer.settingsStore.settingsFlow.first().overlay
+            handleView.alpha = cfg.handleAlpha
         }
     }
 
     private fun renderRecentNotes(notes: List<Note>) {
         recentContainer.removeAllViews()
         notes.forEach { note ->
-            val textView = TextView(this).apply {
-                val statusText = when (note.transcriptionStatus) {
-                    TranscriptionStatus.UPLOADING -> "上传中"
-                    TranscriptionStatus.TRANSCRIBING -> "转写中"
-                    TranscriptionStatus.DONE -> "转写成功"
-                    TranscriptionStatus.FAILED -> "转写失败"
-                    else -> ""
-                }
-                val summary = (note.transcript?.takeIf { it.isNotBlank() } ?: note.content).take(24)
-                text = buildString {
-                    append(note.category.name)
-                    append(" · ")
-                    append(summary)
-                    if (statusText.isNotBlank()) {
-                        append(" · ")
-                        append(statusText)
-                    }
-                }
-                setPadding(12, 12, 12, 12)
+            val summary = (note.transcript?.takeIf { it.isNotBlank() } ?: note.content).take(40)
+            val tv = TextView(this).apply {
+                text = summary
+                setPadding(8, 6, 8, 6)
+                textSize = 12f
+                setTextColor(0xFF374151.toInt())
                 setOnClickListener {
-                    val intent = Intent(this@OverlayHandleService, MainActivity::class.java).apply {
+                    startActivity(Intent(this@OverlayHandleService, MainActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    }
-                    startActivity(intent)
+                    })
                 }
             }
-            recentContainer.addView(textView)
+            recentContainer.addView(tv)
         }
     }
 
     private fun startRecordingFromOverlay() {
-        if (!hasMicrophonePermission()) {
-            AppLogger.error("YDOC_OVERLAY", "Overlay recording denied: missing microphone or notification permission")
-            recordingStatus.text = "缺少录音权限，请先到主界面授权"
-            return
-        }
-        overlayState = overlayState.copy(mode = OverlayMode.RECORDING, isRecording = true, recordingSeconds = 0)
-        AppLogger.overlay("Overlay recording started")
+        if (!checkPermissions()) return
+        vibrateHandle()
+        overlayState = overlayState.copy(isRecording = true, recordingSeconds = 0)
         render()
-        startRecordingTicker()
-        serviceScope.launch(Dispatchers.IO) {
-            runCatching {
-                ContextCompat.startForegroundService(this@OverlayHandleService, Intent(this@OverlayHandleService, RecordingService::class.java))
-                appContainer.audioRecorder.start()
-            }.onFailure {
-                AppLogger.error("YDOC_OVERLAY", "Overlay recorder start failed", it)
-                stopRecordingTicker()
-                overlayState = overlayState.copy(mode = OverlayMode.EXPANDED, isRecording = false)
+        ContextCompat.startForegroundService(this, Intent(this, RecordingService::class.java))
+        recordingTimerJob = serviceScope.launch {
+            while (overlayState.isRecording) {
+                delay(1000); overlayState = overlayState.copy(recordingSeconds = overlayState.recordingSeconds + 1); render()
             }
         }
     }
 
     private fun stopRecordingFromOverlay() {
-        overlayState = overlayState.copy(mode = OverlayMode.EXPANDED, isRecording = false)
-        stopRecordingTicker()
-        serviceScope.launch(Dispatchers.IO) {
-            runCatching {
-                val output = appContainer.audioRecorder.stop()
-                stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
-                AppLogger.overlay("Overlay recording stopped path=${output.path} format=${output.format}")
-                val relayConfig = appContainer.settingsStore.settingsFlow.first().relay
-                val volcengineConfig = appContainer.settingsStore.settingsFlow.first().volcengine
+        recordingTimerJob?.cancel()
+        overlayState = overlayState.copy(isRecording = false, recordingSeconds = 0)
+        render()
+        serviceScope.launch {
+            val output = appContainer.audioRecorder.stop()
+            stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
+            if (output != null) {
+                val settings = appContainer.settingsStore.settingsFlow.first()
+                val relayConfig = settings.relay
+                val volcengineConfig = settings.volcengine
                 var note = appContainer.noteRepository.createVoiceNote(output.path, output.format, overlayState.selectedPriority)
                 if (relayConfig.enabled) {
-                    val upload = appContainer.relayStorageClient.upload(java.io.File(output.path), relayConfig)
-                    note = appContainer.noteRepository.attachRelayInfo(note, upload.fileId, upload.url, upload.expiresAt)
-                    AppLogger.overlay("Overlay relay upload success fileId=${upload.fileId}")
+                    try {
+                        val info = appContainer.relayStorageClient.upload(java.io.File(output.path), relayConfig)
+                        note = appContainer.noteRepository.attachRelayInfo(note, info.fileId, info.url, info.expiresAt)
+                        if (volcengineConfig.enabled) {
+                            appContainer.transcriptionScheduler.enqueueRetry(note.id, false)
+                        }
+                    } catch (_: Exception) { }
                 }
-                if (relayConfig.enabled && volcengineConfig.enabled && !note.relayUrl.isNullOrBlank()) {
-                    appContainer.transcriptionOrchestrator.transcribe(note, volcengineConfig)
-                    AppLogger.overlay("Overlay transcription completed noteId=${note.id}")
-                }
-                val latest = appContainer.noteRepository.getNote(note.id) ?: note
-                appContainer.syncOrchestrator.syncNote(latest)
-                AppLogger.overlay("Overlay latest note synced noteId=${latest.id}")
-            }.onFailure {
-                AppLogger.error("YDOC_OVERLAY", "Overlay recording pipeline failed", it)
-                stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
+                appContainer.syncOrchestrator.syncBidirectional()
             }
         }
-        render()
-    }
-
-    private fun startRecordingTicker() {
-        recordingTimerJob?.cancel()
-        recordingTimerJob = serviceScope.launch {
-            var elapsed = 0
-            while (true) {
-                delay(1000)
-                elapsed += 1
-                overlayState = overlayState.copy(recordingSeconds = elapsed)
-                render()
-            }
-        }
-    }
-
-    private fun stopRecordingTicker() {
-        recordingTimerJob?.cancel()
-        recordingTimerJob = null
-        overlayState = overlayState.copy(recordingSeconds = 0)
-    }
-
-    private fun enableInputFocus() {
-        enterTextInputMode()
-    }
-
-    private fun enterTextInputMode() {
-        val params = layoutParams ?: return
-        params.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-        windowManager.updateViewLayout(rootView, params)
-        draftInput.isFocusableInTouchMode = true
-        draftInput.isFocusable = true
-        draftInput.setOnKeyListener { _, keyCode, event ->
-            if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                exitTextInputMode()
-                true
-            } else {
-                false
-            }
-        }
-    }
-
-    private fun exitTextInputMode() {
-        val params = layoutParams ?: return
-        params.flags = baseWindowFlags
-        windowManager.updateViewLayout(rootView, params)
-        draftInput.clearFocus()
     }
 
     private fun vibrateHandle() {
-        val vibrator = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(24, VibrationEffect.DEFAULT_AMPLITUDE))
+            @Suppress("DEPRECATION")
+            (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE))
         } else {
             @Suppress("DEPRECATION")
-            vibrator.vibrate(24)
+            (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(40)
         }
     }
 
-    private fun hasMicrophonePermission(): Boolean {
+    private fun categoryColor(category: NoteCategory): Int = when (category) {
+        NoteCategory.TODO -> 0xFFD89A2B.toInt()
+        NoteCategory.TASK -> 0xFF4F86C6.toInt()
+        NoteCategory.REMINDER -> 0xFFC9656C.toInt()
+        NoteCategory.NOTE -> 0xFF6C8E7B.toInt()
+    }
+
+    private fun priorityColor(priority: NotePriority): Int = when (priority) {
+        NotePriority.LOW -> 0xFF6B7280.toInt()
+        NotePriority.MEDIUM -> 0xFF4F86C6.toInt()
+        NotePriority.HIGH -> 0xFFD89A2B.toInt()
+        NotePriority.URGENT -> 0xFFC9656C.toInt()
+    }
+
+    private fun checkPermissions(): Boolean {
         val audioGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val notificationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
+        } else true
         return audioGranted && notificationGranted
     }
 
