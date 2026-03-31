@@ -330,14 +330,16 @@ class OverlayHandleService : Service() {
 
         if (overlayState.isRecording) {
             recordButton.setImageResource(android.R.drawable.ic_media_pause)
-            recordButton.setBackgroundColor(0xFFEF4444.toInt())
+            recordButton.setBackgroundResource(R.drawable.overlay_record_btn_bg)
             recordingStatus.text = "录音中 ${overlayState.recordingSeconds}s"
             recordingStatus.setTextColor(0xFFEF4444.toInt())
+            recordingStatus.textSize = 14f
         } else {
             recordButton.setImageResource(android.R.drawable.ic_btn_speak_now)
-            recordButton.setBackgroundColor(0x00000000)
+            recordButton.setBackgroundResource(R.drawable.overlay_record_btn_bg)
             recordingStatus.text = "按住录音"
             recordingStatus.setTextColor(0xFF6B7280.toInt())
+            recordingStatus.textSize = 13f
         }
 
         categoryButtons.forEach { (category, view) ->
@@ -380,12 +382,21 @@ class OverlayHandleService : Service() {
     private fun startRecordingFromOverlay() {
         if (!checkPermissions()) return
         vibrateHandle()
+        try {
+            appContainer.audioRecorder.start()
+        } catch (_: Exception) {
+            overlayState = overlayState.copy(isRecording = false)
+            render()
+            return
+        }
         overlayState = overlayState.copy(isRecording = true, recordingSeconds = 0)
         render()
         ContextCompat.startForegroundService(this, Intent(this, RecordingService::class.java))
         recordingTimerJob = serviceScope.launch {
             while (overlayState.isRecording) {
-                delay(1000); overlayState = overlayState.copy(recordingSeconds = overlayState.recordingSeconds + 1); render()
+                delay(1000)
+                overlayState = overlayState.copy(recordingSeconds = overlayState.recordingSeconds + 1)
+                render()
             }
         }
     }
@@ -395,24 +406,27 @@ class OverlayHandleService : Service() {
         overlayState = overlayState.copy(isRecording = false, recordingSeconds = 0)
         render()
         serviceScope.launch {
-            val output = appContainer.audioRecorder.stop()
-            stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
-            if (output != null) {
-                val settings = appContainer.settingsStore.settingsFlow.first()
-                val relayConfig = settings.relay
-                val volcengineConfig = settings.volcengine
-                var note = appContainer.noteRepository.createVoiceNote(output.path, output.format, overlayState.selectedPriority)
-                if (relayConfig.enabled) {
-                    try {
-                        val info = appContainer.relayStorageClient.upload(java.io.File(output.path), relayConfig)
-                        note = appContainer.noteRepository.attachRelayInfo(note, info.fileId, info.url, info.expiresAt)
-                        if (volcengineConfig.enabled) {
-                            appContainer.transcriptionScheduler.enqueueRetry(note.id, false)
-                        }
-                    } catch (_: Exception) { }
-                }
-                syncIfEnabled(note)
+            val output = try {
+                appContainer.audioRecorder.stop()
+            } catch (_: Exception) {
+                stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
+                return@launch
             }
+            stopService(Intent(this@OverlayHandleService, RecordingService::class.java))
+            val settings = appContainer.settingsStore.settingsFlow.first()
+            val relayConfig = settings.relay
+            val volcengineConfig = settings.volcengine
+            var note = appContainer.noteRepository.createVoiceNote(output.path, output.format, overlayState.selectedPriority)
+            if (relayConfig.enabled) {
+                try {
+                    val info = appContainer.relayStorageClient.upload(java.io.File(output.path), relayConfig)
+                    note = appContainer.noteRepository.attachRelayInfo(note, info.fileId, info.url, info.expiresAt)
+                    if (volcengineConfig.enabled) {
+                        appContainer.transcriptionScheduler.enqueueRetry(note.id, false)
+                    }
+                } catch (_: Exception) { }
+            }
+            syncIfEnabled(note)
         }
     }
 
@@ -454,8 +468,6 @@ class OverlayHandleService : Service() {
         } else true
         return audioGranted && notificationGranted
     }
-
-    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
 
     companion object {
         private const val CHANNEL_ID = "ydoc_overlay_channel"
