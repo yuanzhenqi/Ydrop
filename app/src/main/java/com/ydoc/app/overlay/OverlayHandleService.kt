@@ -195,12 +195,12 @@ class OverlayHandleService : Service() {
             val text = draftInput.text.toString().trim()
             if (text.isNotBlank()) {
                 serviceScope.launch {
-                    appContainer.noteRepository.createTextNote(text, overlayState.selectedCategory, overlayState.selectedPriority)
-                    appContainer.syncOrchestrator.syncPending()
+                    val note = appContainer.noteRepository.createTextNote(text, overlayState.selectedCategory, overlayState.selectedPriority)
                     draftInput.setText("")
                     exitTextInputMode()
                     overlayState = overlayState.copy(draftText = "")
                     render()
+                    syncIfEnabled(note)
                 }
             }
         }
@@ -411,8 +411,15 @@ class OverlayHandleService : Service() {
                         }
                     } catch (_: Exception) { }
                 }
-                appContainer.syncOrchestrator.syncBidirectional()
+                syncIfEnabled(note)
             }
+        }
+    }
+
+    private suspend fun syncIfEnabled(note: Note) {
+        val settings = appContainer.settingsStore.settingsFlow.first()
+        if (settings.webDavEnabled && settings.webDav.autoSync) {
+            appContainer.syncOrchestrator.syncBidirectional()
         }
     }
 

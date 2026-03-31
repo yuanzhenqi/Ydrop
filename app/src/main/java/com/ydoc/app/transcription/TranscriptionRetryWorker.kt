@@ -18,7 +18,7 @@ class TranscriptionRetryWorker(
         if (!current.relay.enabled || !current.volcengine.enabled) return Result.failure()
 
         return runCatching {
-            container.transcriptionOrchestrator.transcribe(note, current.volcengine)
+            container.transcriptionOrchestrator.transcribe(note, current.volcengine, current.relay)
         }.fold(
             onSuccess = { Result.success() },
             onFailure = { Result.retry() },

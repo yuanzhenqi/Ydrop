@@ -48,5 +48,6 @@ class AppContainer(context: Context) {
         noteRepository = noteRepository,
         transcriptionClient = volcengineTranscriptionClient,
         syncOrchestrator = syncOrchestrator,
+        relayStorageClient = relayStorageClient,
     )
 }

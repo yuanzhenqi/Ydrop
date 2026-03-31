@@ -101,6 +101,7 @@ class AppViewModel(
                 }
             }
             refreshSettings()
+            launch { autoSyncOnStart() }
         }
     }
 
@@ -248,7 +249,7 @@ class AppViewModel(
                     val volcengineConfig = _uiState.value.settings.volcengine
                     if (relayConfig.enabled && volcengineConfig.enabled && !note.relayUrl.isNullOrBlank()) {
                         runCatching {
-                            container.transcriptionOrchestrator.transcribe(note, volcengineConfig)
+                            container.transcriptionOrchestrator.transcribe(note, volcengineConfig, relayConfig)
                         }.onFailure {
                             container.transcriptionScheduler.enqueueRetry(note.id, _uiState.value.settings.webDav.wifiOnly)
                             throw it
@@ -467,6 +468,15 @@ class AppViewModel(
                 hasUnsavedChanges = false,
             ),
         )
+    }
+
+    private suspend fun autoSyncOnStart() {
+        val settings = _uiState.value.settings
+        if (settings.webDavEnabled && settings.webDav.autoSync) {
+            withContext(Dispatchers.IO) {
+                container.syncOrchestrator.syncBidirectional()
+            }
+        }
     }
 
     private fun startRecordingTimer(path: String) {
