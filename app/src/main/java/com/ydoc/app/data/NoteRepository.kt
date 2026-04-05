@@ -2,15 +2,14 @@ package com.ydoc.app.data
 
 import com.ydoc.app.data.local.NoteDao
 import com.ydoc.app.data.local.TombstoneDao
-import com.ydoc.app.model.NoteCategory
-import com.ydoc.app.model.NoteColorToken
+import com.ydoc.app.data.local.TombstoneEntity
 import com.ydoc.app.model.Note
+import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NotePriority
 import com.ydoc.app.model.NoteSource
 import com.ydoc.app.model.NoteStatus
 import com.ydoc.app.model.TranscriptionStatus
 import com.ydoc.app.model.defaultColorFor
-import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -44,6 +43,7 @@ class NoteRepository(
             lastSyncedAt = null,
             audioPath = null,
             audioFormat = null,
+            audioPublicUri = null,
             relayFileId = null,
             relayUrl = null,
             relayExpiresAt = null,
@@ -54,21 +54,26 @@ class NoteRepository(
             transcriptionUpdatedAt = null,
             syncError = null,
             pinned = false,
+            isArchived = false,
+            archivedAt = null,
+            isTrashed = false,
+            trashedAt = null,
         )
         noteDao.upsert(note.toEntity())
         return note
     }
 
     suspend fun createVoiceNote(
+        noteId: String,
         audioPath: String,
         audioFormat: String,
         priority: NotePriority = NotePriority.HIGH,
+        audioPublicUri: String? = null,
     ): Note {
         val now = System.currentTimeMillis()
-        val fileName = File(audioPath).nameWithoutExtension
         val note = Note(
-            id = UUID.randomUUID().toString(),
-            title = "语音记录 ${fileName.takeLast(6)}",
+            id = noteId,
+            title = "语音记录 ${noteId.takeLast(6)}",
             content = "语音记录，等待后续转写。",
             source = NoteSource.VOICE,
             category = NoteCategory.REMINDER,
@@ -80,6 +85,7 @@ class NoteRepository(
             lastSyncedAt = null,
             audioPath = audioPath,
             audioFormat = audioFormat,
+            audioPublicUri = audioPublicUri,
             relayFileId = null,
             relayUrl = null,
             relayExpiresAt = null,
@@ -90,6 +96,10 @@ class NoteRepository(
             transcriptionUpdatedAt = null,
             syncError = null,
             pinned = false,
+            isArchived = false,
+            archivedAt = null,
+            isTrashed = false,
+            trashedAt = null,
         )
         noteDao.upsert(note.toEntity())
         return note
@@ -102,7 +112,14 @@ class NoteRepository(
     suspend fun markSynced(noteId: String, remotePath: String? = null) {
         val entity = noteDao.getById(noteId)
         if (remotePath != null && entity != null) {
-            noteDao.upsert(entity.copy(status = NoteStatus.SYNCED.name, lastSyncedAt = System.currentTimeMillis(), syncError = null, remotePath = remotePath))
+            noteDao.upsert(
+                entity.copy(
+                    status = NoteStatus.SYNCED.name,
+                    lastSyncedAt = System.currentTimeMillis(),
+                    syncError = null,
+                    remotePath = remotePath,
+                ),
+            )
         } else {
             noteDao.updateSyncMetadata(noteId, NoteStatus.SYNCED.name, System.currentTimeMillis(), null)
         }
@@ -187,7 +204,7 @@ class NoteRepository(
 
     suspend fun deleteNote(noteId: String) {
         noteDao.deleteById(noteId)
-        tombstoneDao.insert(com.ydoc.app.data.local.TombstoneEntity(noteId, System.currentTimeMillis()))
+        tombstoneDao.insert(TombstoneEntity(noteId, System.currentTimeMillis()))
     }
 
     suspend fun pendingNotes(): List<Note> = noteDao.getPendingSync().map { it.toModel() }
@@ -208,18 +225,64 @@ class NoteRepository(
                 updatedAt = note.updatedAt,
                 lastSyncedAt = System.currentTimeMillis(),
                 syncError = null,
+                audioPublicUri = existing.audioPublicUri,
                 transcript = note.transcript ?: existing.transcript,
                 transcriptionStatus = note.transcriptionStatus,
                 transcriptionError = note.transcriptionError,
                 remotePath = note.remotePath,
                 lastPulledAt = System.currentTimeMillis(),
                 relayUrl = note.relayUrl ?: existing.relayUrl,
+                isArchived = note.isArchived,
+                archivedAt = note.archivedAt,
+                isTrashed = false,
+                trashedAt = null,
             )
             noteDao.upsert(merged.toEntity())
         } else {
             noteDao.upsert(note.toEntity())
         }
         tombstoneDao.deleteById(note.id)
+    }
+
+    fun observeActiveNotes(): Flow<List<Note>> = noteDao.observeActive().map { it.map { entity -> entity.toModel() } }
+    fun observeArchivedNotes(): Flow<List<Note>> = noteDao.observeArchived().map { it.map { entity -> entity.toModel() } }
+    fun observeTrashedNotes(): Flow<List<Note>> = noteDao.observeTrashed().map { it.map { entity -> entity.toModel() } }
+
+    suspend fun archiveNote(noteId: String): Note {
+        val now = System.currentTimeMillis()
+        noteDao.archiveById(noteId, now, now)
+        return getNote(noteId) ?: error("找不到这条记录。")
+    }
+
+    suspend fun unarchiveNote(noteId: String): Note {
+        val now = System.currentTimeMillis()
+        noteDao.unarchiveById(noteId, now)
+        return getNote(noteId) ?: error("找不到这条记录。")
+    }
+
+    suspend fun trashNote(noteId: String): Note {
+        val now = System.currentTimeMillis()
+        noteDao.trashById(noteId, now, now)
+        return getNote(noteId) ?: error("找不到这条记录。")
+    }
+
+    suspend fun restoreNote(noteId: String): Note {
+        val now = System.currentTimeMillis()
+        noteDao.restoreById(noteId, now)
+        return getNote(noteId) ?: error("找不到这条记录。")
+    }
+
+    suspend fun setPinned(noteId: String, pinned: Boolean): Note {
+        noteDao.setPinned(noteId, pinned, System.currentTimeMillis())
+        return getNote(noteId) ?: error("Note not found")
+    }
+
+    suspend fun emptyTrash() {
+        val trashed = noteDao.getTrashed()
+        trashed.forEach { entity ->
+            noteDao.deleteById(entity.id)
+            tombstoneDao.insert(TombstoneEntity(entity.id, System.currentTimeMillis()))
+        }
     }
 
     suspend fun getTombstoneIds(): List<String> = tombstoneDao.getAllIds()

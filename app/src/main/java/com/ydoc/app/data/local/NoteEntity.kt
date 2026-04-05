@@ -18,6 +18,7 @@ data class NoteEntity(
     val lastSyncedAt: Long?,
     val audioPath: String?,
     val audioFormat: String?,
+    val audioPublicUri: String? = null,
     val relayFileId: String?,
     val relayUrl: String?,
     val relayExpiresAt: Long?,
@@ -30,4 +31,8 @@ data class NoteEntity(
     val pinned: Boolean,
     val remotePath: String?,
     val lastPulledAt: Long?,
+    val isArchived: Boolean,
+    val archivedAt: Long?,
+    val isTrashed: Boolean,
+    val trashedAt: Long?,
 )

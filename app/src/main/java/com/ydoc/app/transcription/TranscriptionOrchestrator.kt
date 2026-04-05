@@ -1,6 +1,7 @@
 package com.ydoc.app.transcription
 
 import android.util.Log
+import com.ydoc.app.ai.AiOrchestrator
 import com.ydoc.app.data.NoteRepository
 import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.Note
@@ -15,6 +16,7 @@ class TranscriptionOrchestrator(
     private val transcriptionClient: VolcengineTranscriptionClient,
     private val syncOrchestrator: SyncOrchestrator,
     private val relayStorageClient: RelayStorageClient,
+    private val aiOrchestrator: AiOrchestrator,
 ) {
     suspend fun transcribe(note: Note, config: VolcengineConfig, relayConfig: RelayConfig? = null) {
         val audioUrl = note.relayUrl ?: error("Relay URL missing for transcription")
@@ -38,6 +40,7 @@ class TranscriptionOrchestrator(
                 noteRepository.getNote(note.id)?.let { updated ->
                     syncOrchestrator.syncNote(updated)
                 }
+                aiOrchestrator.maybeAnalyze(note.id, com.ydoc.app.model.AiRunTrigger.VOICE_TRANSCRIBED)
                 cleanupRelayFile(note.relayFileId, relayConfig)
                 return
             }

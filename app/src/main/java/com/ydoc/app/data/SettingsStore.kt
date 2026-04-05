@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.ydoc.app.config.DefaultConfig
+import com.ydoc.app.model.AiConfig
+import com.ydoc.app.model.AiEndpointMode
 import com.ydoc.app.model.RelayConfig
 import com.ydoc.app.model.OverlayConfig
 import com.ydoc.app.model.SyncSettingsState
@@ -37,6 +39,17 @@ class SettingsStore(
                 resourceId = prefs[Keys.volcResourceId] ?: DefaultConfig.VOLC_RESOURCE_ID,
                 enabled = prefs[Keys.volcEnabled] ?: false,
             ),
+            ai = AiConfig(
+                enabled = prefs[Keys.aiEnabled] ?: false,
+                baseUrl = prefs[Keys.aiBaseUrl] ?: "",
+                token = prefs[Keys.aiToken] ?: "",
+                model = prefs[Keys.aiModel] ?: "ydrop-notes-v1",
+                endpointMode = prefs[Keys.aiEndpointMode]
+                    ?.let { runCatching { AiEndpointMode.valueOf(it) }.getOrNull() }
+                    ?: AiEndpointMode.AUTO,
+                autoRunOnTextSave = prefs[Keys.aiAutoText] ?: true,
+                autoRunOnVoiceTranscribed = prefs[Keys.aiAutoVoice] ?: true,
+            ),
         )
     }
 
@@ -66,6 +79,18 @@ class SettingsStore(
         }
     }
 
+    suspend fun saveAi(config: AiConfig) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[Keys.aiEnabled] = config.enabled
+            prefs[Keys.aiBaseUrl] = config.baseUrl
+            prefs[Keys.aiToken] = config.token
+            prefs[Keys.aiModel] = config.model
+            prefs[Keys.aiEndpointMode] = config.endpointMode.name
+            prefs[Keys.aiAutoText] = config.autoRunOnTextSave
+            prefs[Keys.aiAutoVoice] = config.autoRunOnVoiceTranscribed
+        }
+    }
+
     private object Keys {
         val relayBaseUrl = stringPreferencesKey("relay_base_url")
         val relayToken = stringPreferencesKey("relay_token")
@@ -78,5 +103,12 @@ class SettingsStore(
         val volcAccessToken = stringPreferencesKey("volc_access_token")
         val volcResourceId = stringPreferencesKey("volc_resource_id")
         val volcEnabled = booleanPreferencesKey("volc_enabled")
+        val aiEnabled = booleanPreferencesKey("ai_enabled")
+        val aiBaseUrl = stringPreferencesKey("ai_base_url")
+        val aiToken = stringPreferencesKey("ai_token")
+        val aiModel = stringPreferencesKey("ai_model")
+        val aiEndpointMode = stringPreferencesKey("ai_endpoint_mode")
+        val aiAutoText = booleanPreferencesKey("ai_auto_text")
+        val aiAutoVoice = booleanPreferencesKey("ai_auto_voice")
     }
 }

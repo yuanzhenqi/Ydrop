@@ -99,6 +99,13 @@ class SyncOrchestrator(
                 val local = localById[remoteId]
 
                 if (local != null) {
+                    if (local.isTrashed) {
+                        client.deleteByPath(target, rfi.path).onFailure {
+                            result.failed++
+                            AppLogger.error("YDOC_SYNC", "删除回收站远端文件失败: $remoteId", it)
+                        }
+                        continue
+                    }
                     val remoteNote = formatter.parseFromMarkdown(content, rfi.path)
                     if (remoteNote == null) {
                         Log.e(TAG, "parseFromMarkdown failed for remote id=$remoteId")
@@ -109,15 +116,17 @@ class SyncOrchestrator(
                     val localTime = local.updatedAt
                     val localSyncedAt = local.lastSyncedAt ?: 0L
                     val httpLastModified = rfi.lastModified ?: 0L
-                    val contentChanged = remoteNote.content != local.content ||
+                    val remoteChanged = remoteNote.content != local.content ||
                         remoteNote.title != local.title ||
                         remoteNote.category != local.category ||
-                        remoteNote.priority != local.priority
+                        remoteNote.priority != local.priority ||
+                        remoteNote.isArchived != local.isArchived ||
+                        rfi.path != local.remotePath
 
-                    Log.d(TAG, "Compare id=$remoteId: frontmatter=$remoteFrontmatterTime local=$localTime lastSynced=$localSyncedAt httpLastMod=$httpLastModified contentChanged=$contentChanged")
+                    Log.d(TAG, "Compare id=$remoteId: frontmatter=$remoteFrontmatterTime local=$localTime lastSynced=$localSyncedAt httpLastMod=$httpLastModified remoteChanged=$remoteChanged")
 
                     if (httpLastModified > localSyncedAt || (remoteFrontmatterTime > localTime)) {
-                        if (contentChanged) {
+                        if (remoteChanged) {
                             val merged = remoteNote.copy(remotePath = rfi.path)
                             noteRepository.upsertFromRemote(merged)
                             result.pulled++
@@ -146,6 +155,7 @@ class SyncOrchestrator(
 
             for (note in allLocalNotes) {
                 if (note.id in tombstoneIds) continue
+                if (note.isTrashed) continue
                 if (note.status == NoteStatus.SYNCED && note.id in remoteByNoteId.keys) continue
                 if (note.id !in remoteByNoteId.keys) {
                     pushNote(note, client, target, result)
@@ -188,9 +198,23 @@ class SyncOrchestrator(
 
     private fun buildRemotePath(note: Note, target: SyncTarget): String? {
         val config = target.config as? WebDavConfig ?: return null
-        val folder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
+        val folder = remoteFolder(config, note)
         val encoded = URLEncoder.encode(formatter.fileName(note), Charsets.UTF_8.name())
         return "$folder/$encoded"
+    }
+
+    private fun remoteFolder(config: WebDavConfig, note: Note): String {
+        val inboxFolder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
+        if (!note.isArchived) return inboxFolder
+
+        val segments = inboxFolder.split('/').filter { it.isNotBlank() }.toMutableList()
+        if (segments.isEmpty()) return "archive"
+        if (segments.last().equals("inbox", ignoreCase = true)) {
+            segments[segments.lastIndex] = "archive"
+            return segments.joinToString("/")
+        }
+        segments += "archive"
+        return segments.joinToString("/")
     }
 
     private suspend fun syncOne(note: Note, targets: List<SyncTarget>): Boolean {

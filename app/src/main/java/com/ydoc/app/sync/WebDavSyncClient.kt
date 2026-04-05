@@ -46,9 +46,9 @@ class WebDavSyncClient(
         val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
         require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
 
-        val folder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
+        val folder = noteFolder(config, note)
         val encodedFileName = URLEncoder.encode(formatter.fileName(note), Charsets.UTF_8.name())
-        val targetUrl = config.baseUrl.trimEnd('/') + "/" + folder + "/" + encodedFileName
+        val targetUrl = remoteUrl(config.baseUrl, "$folder/$encodedFileName")
         val body = formatter.render(note).toRequestBody("text/markdown; charset=utf-8".toMediaType())
         val authHeader = authHeader(config)
 
@@ -69,7 +69,7 @@ class WebDavSyncClient(
             }
         }
 
-        note.audioPath?.let { uploadAudio(config, folder, it, authHeader) }
+        note.audioPath?.let { uploadAudio(config, inboxFolder(config), it, authHeader) }
         Unit
     }.recoverCatching { throwable ->
         throw enrichError(throwable)
@@ -79,13 +79,13 @@ class WebDavSyncClient(
         val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
         require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
 
-        val folder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
         val authHeader = authHeader(config)
-        deleteRemoteFile(config.baseUrl.trimEnd('/') + "/" + folder + "/" + encodedMarkdownFileName(note), authHeader)
+        val remotePath = note.remotePath ?: "${noteFolder(config, note)}/${encodedMarkdownFileName(note)}"
+        deleteRemoteFile(remoteUrl(config.baseUrl, remotePath), authHeader)
         note.audioPath?.let {
-            val audioFolder = "$folder/audio"
+            val audioFolder = "${inboxFolder(config)}/audio"
             val encodedFileName = URLEncoder.encode(File(it).name, Charsets.UTF_8.name())
-            deleteRemoteFile(config.baseUrl.trimEnd('/') + "/" + audioFolder + "/" + encodedFileName, authHeader)
+            deleteRemoteFile(remoteUrl(config.baseUrl, "$audioFolder/$encodedFileName"), authHeader)
         }
         Unit
     }.recoverCatching { throwable ->
@@ -95,31 +95,9 @@ class WebDavSyncClient(
     override suspend fun listRemote(target: SyncTarget): Result<List<RemoteFileInfo>> = runCatching {
         val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
         require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
-        val folder = config.folder.trim('/').ifBlank { "ydoc/inbox" }
-        val folderUrl = config.baseUrl.trimEnd('/') + "/" + folder
         val authHeader = authHeader(config)
-        val propfindBody = """
-            <?xml version="1.0" encoding="utf-8"?>
-            <d:propfind xmlns:d="DAV:">
-                <d:prop>
-                    <d:getlastmodified/>
-                </d:prop>
-            </d:propfind>
-        """.trimIndent()
-        val request = Request.Builder()
-            .url(folderUrl)
-            .method("PROPFIND", propfindBody.toRequestBody("application/xml; charset=utf-8".toMediaType()))
-            .header("Depth", "1")
-            .apply { authHeader?.let { header("Authorization", it) } }
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string().orEmpty()
-            if (!response.isSuccessful && response.code != 207) {
-                error(responseMessage("WebDAV 列出文件失败", response.code, responseBody))
-            }
-            parsePropfindResponse(responseBody, folder)
-        }
+        val folders = linkedSetOf(inboxFolder(config), archiveFolder(config))
+        folders.flatMap { folder -> listRemoteInFolder(config, folder, authHeader) }
     }.recoverCatching { throwable ->
         throw enrichError(throwable)
     }
@@ -128,7 +106,7 @@ class WebDavSyncClient(
         val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
         require(config.baseUrl.isNotBlank()) { "WebDAV base URL is empty" }
         val authHeader = authHeader(config)
-        val url = if (remotePath.startsWith("http")) remotePath else config.baseUrl.trimEnd('/') + "/" + remotePath
+        val url = if (remotePath.startsWith("http")) remotePath else remoteUrl(config.baseUrl, remotePath)
         val request = Request.Builder()
             .url(url)
             .get()
@@ -148,10 +126,41 @@ class WebDavSyncClient(
     override suspend fun deleteByPath(target: SyncTarget, remotePath: String): Result<Unit> = runCatching {
         val config = target.config as? WebDavConfig ?: error("WebDAV config missing")
         val authHeader = authHeader(config)
-        val url = if (remotePath.startsWith("http")) remotePath else config.baseUrl.trimEnd('/') + "/" + remotePath
+        val url = if (remotePath.startsWith("http")) remotePath else remoteUrl(config.baseUrl, remotePath)
         deleteRemoteFile(url, authHeader)
     }.recoverCatching { throwable ->
         throw enrichError(throwable)
+    }
+
+    private fun listRemoteInFolder(
+        config: WebDavConfig,
+        folder: String,
+        authHeader: String?,
+    ): List<RemoteFileInfo> {
+        val folderUrl = remoteUrl(config.baseUrl, folder)
+        val propfindBody = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <d:propfind xmlns:d="DAV:">
+                <d:prop>
+                    <d:getlastmodified/>
+                </d:prop>
+            </d:propfind>
+        """.trimIndent()
+        val request = Request.Builder()
+            .url(folderUrl)
+            .method("PROPFIND", propfindBody.toRequestBody("application/xml; charset=utf-8".toMediaType()))
+            .header("Depth", "1")
+            .apply { authHeader?.let { header("Authorization", it) } }
+            .build()
+
+        httpClient.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string().orEmpty()
+            if (response.code == 404) return emptyList()
+            if (!response.isSuccessful && response.code != 207) {
+                error(responseMessage("WebDAV 列出文件失败", response.code, responseBody))
+            }
+            return parsePropfindResponse(responseBody, folder)
+        }
     }
 
     private fun parsePropfindResponse(xml: String, folder: String): List<RemoteFileInfo> {
@@ -247,6 +256,26 @@ class WebDavSyncClient(
         val compactBody = body.trim().replace(Regex("\\s+"), " ").take(180)
         return if (compactBody.isBlank()) "$prefix: HTTP $code" else "$prefix: HTTP $code - $compactBody"
     }
+
+    private fun inboxFolder(config: WebDavConfig): String =
+        config.folder.trim('/').ifBlank { "ydoc/inbox" }
+
+    private fun archiveFolder(config: WebDavConfig): String {
+        val segments = inboxFolder(config).split('/').filter { it.isNotBlank() }.toMutableList()
+        if (segments.isEmpty()) return "archive"
+        if (segments.last().equals("inbox", ignoreCase = true)) {
+            segments[segments.lastIndex] = "archive"
+            return segments.joinToString("/")
+        }
+        segments += "archive"
+        return segments.joinToString("/")
+    }
+
+    private fun noteFolder(config: WebDavConfig, note: Note): String =
+        if (note.isArchived) archiveFolder(config) else inboxFolder(config)
+
+    private fun remoteUrl(baseUrl: String, remotePath: String): String =
+        "${baseUrl.trimEnd('/')}/${remotePath.trimStart('/')}"
 
     private fun encodedMarkdownFileName(note: Note): String = URLEncoder.encode(formatter.fileName(note), Charsets.UTF_8.name())
 

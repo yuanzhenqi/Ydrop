@@ -8,16 +8,29 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [NoteEntity::class, SyncTargetEntity::class, TombstoneEntity::class],
-    version = 8,
+    entities = [
+        NoteEntity::class,
+        SyncTargetEntity::class,
+        TombstoneEntity::class,
+        AiSuggestionEntity::class,
+        ReminderEntryEntity::class,
+    ],
+    version = 12,
     exportSchema = false,
 )
 abstract class YDocDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun syncTargetDao(): SyncTargetDao
     abstract fun tombstoneDao(): TombstoneDao
+    abstract fun aiSuggestionDao(): AiSuggestionDao
+    abstract fun reminderEntryDao(): ReminderEntryDao
 
     companion object {
+        @Volatile
+        private var INSTANCE: YDocDatabase? = null
+
+        private val lock = Any()
+
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE notes ADD COLUMN category TEXT NOT NULL DEFAULT 'NOTE'")
@@ -71,14 +84,78 @@ abstract class YDocDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE notes ADD COLUMN isArchived INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE notes ADD COLUMN archivedAt INTEGER")
+                database.execSQL("ALTER TABLE notes ADD COLUMN isTrashed INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE notes ADD COLUMN trashedAt INTEGER")
+            }
+        }
+
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE notes ADD COLUMN audioPublicUri TEXT")
+            }
+        }
+
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS ai_suggestions (
+                        id TEXT NOT NULL,
+                        noteId TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        suggestedTitle TEXT,
+                        suggestedCategory TEXT,
+                        suggestedPriority TEXT,
+                        todoItemsJson TEXT NOT NULL,
+                        extractedEntitiesJson TEXT NOT NULL,
+                        reminderCandidatesJson TEXT NOT NULL,
+                        errorMessage TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id TEXT NOT NULL,
+                        noteId TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        scheduledAt INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        deliveryTargetsJson TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun build(context: Context): YDocDatabase =
-            Room.databaseBuilder(
-                context,
-                YDocDatabase::class.java,
-                "ydoc.db",
-            ).addMigrations(
-                MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
-                MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-            ).build()
+            INSTANCE ?: synchronized(lock) {
+                INSTANCE ?: Room.databaseBuilder(
+                    context.applicationContext,
+                    YDocDatabase::class.java,
+                    "ydoc.db",
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
+                    MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
+                ).build().also { INSTANCE = it }
+            }
     }
 }

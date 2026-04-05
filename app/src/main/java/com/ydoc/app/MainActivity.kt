@@ -8,20 +8,24 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.remember
-import com.ydoc.app.data.AppContainer
+import androidx.compose.runtime.mutableStateOf
 import com.ydoc.app.overlay.OverlayHandleService
 import com.ydoc.app.overlay.OverlayPermissionHelper
+import com.ydoc.app.quickrecord.QuickRecordShortcuts
 import com.ydoc.app.ui.YDocApp
 import com.ydoc.app.ui.AppViewModel
 import com.ydoc.app.ui.theme.YDocTheme
 
 class MainActivity : ComponentActivity() {
+    private val noteLaunchRequest = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        noteLaunchRequest.value = intent?.getStringExtra(EXTRA_NOTE_ID)
         val quickRecordRequested = intent?.action == ACTION_QUICK_RECORD
         enableEdgeToEdge()
         setContent {
-            val container = remember { AppContainer(applicationContext) }
+            val container = remember { application.appContainer }
             val audioPermissionLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestMultiplePermissions(),
             ) { }
@@ -38,6 +42,8 @@ class MainActivity : ComponentActivity() {
                         if (enabled) startService(intent) else stopService(intent)
                     },
                     quickRecordRequested = quickRecordRequested,
+                    launchNoteId = noteLaunchRequest.value,
+                    onLaunchNoteConsumed = { noteLaunchRequest.value = null },
                     onRequestRecordingPermissions = {
                         audioPermissionLauncher.launch(
                             arrayOf(
@@ -46,12 +52,20 @@ class MainActivity : ComponentActivity() {
                             ),
                         )
                     },
+                    onPinQuickRecordShortcut = { QuickRecordShortcuts.requestPinnedShortcut(this) },
                 )
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        noteLaunchRequest.value = intent.getStringExtra(EXTRA_NOTE_ID)
+    }
+
     companion object {
         const val ACTION_QUICK_RECORD = "com.ydoc.app.action.QUICK_RECORD"
+        const val EXTRA_NOTE_ID = "NOTE_ID"
     }
 }
