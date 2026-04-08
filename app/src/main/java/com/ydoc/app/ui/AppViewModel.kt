@@ -31,7 +31,9 @@ import com.ydoc.app.model.SyncTarget
 import com.ydoc.app.model.SyncType
 import com.ydoc.app.model.VolcengineConfig
 import com.ydoc.app.model.WebDavConfig
+import com.ydoc.app.model.defaultColorFor
 import com.ydoc.app.recording.RecordingService
+import com.ydoc.app.reminder.ReminderScheduleMode
 import com.ydoc.app.sync.BidirectionalSyncResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -99,6 +101,7 @@ class AppViewModel(
     )
 
     private var recordingTimerJob: Job? = null
+    private var pendingRecordingCompletionMessage: String? = null
 
     init {
         viewModelScope.launch {
@@ -199,6 +202,48 @@ class AppViewModel(
     fun showSection(section: NoteListSection) { _uiState.value = _uiState.value.copy(currentSection = section) }
     fun prepareQuickRecordLaunch() { _uiState.value = _uiState.value.copy(pendingQuickRecord = true) }
     fun consumeQuickRecordLaunch() { _uiState.value = _uiState.value.copy(pendingQuickRecord = false) }
+    fun handleQuickRecordTrigger() {
+        when (_uiState.value.recording.state) {
+            RecordingState.IDLE -> {
+                if (!hasMicrophonePermission()) {
+                    _uiState.value = _uiState.value.copy(
+                        pendingQuickRecord = true,
+                        requiresMicrophonePermission = true,
+                    )
+                    return
+                }
+                _uiState.value = _uiState.value.copy(pendingQuickRecord = false)
+                startRecording()
+            }
+
+            RecordingState.RECORDING -> {
+                _uiState.value = _uiState.value.copy(pendingQuickRecord = false)
+                pendingRecordingCompletionMessage = "上一段录音已保存。"
+                stopRecording()
+            }
+
+            RecordingState.SAVING -> {
+                _uiState.value = _uiState.value.copy(
+                    pendingQuickRecord = false,
+                    message = "正在保存录音，请稍候。",
+                )
+            }
+            RecordingState.STARTING -> {
+                _uiState.value = _uiState.value.copy(
+                    pendingQuickRecord = false,
+                    message = "正在准备录音，请稍候。",
+                )
+            }
+        }
+    }
+
+    fun resumePendingQuickRecordIfPossible() {
+        if (!_uiState.value.pendingQuickRecord) return
+        if (!hasMicrophonePermission()) return
+        if (_uiState.value.recording.state != RecordingState.IDLE) return
+        _uiState.value = _uiState.value.copy(pendingQuickRecord = false)
+        startRecording()
+    }
 
     fun runAiForNote(noteId: String) {
         viewModelScope.launch {
@@ -222,24 +267,26 @@ class AppViewModel(
                         ?: error("没有可应用的 AI 建议。")
                     val note = container.noteRepository.getNote(noteId)
                         ?: error("找不到对应便签。")
+                    val aiContent = buildAppliedAiContent(note.content, suggestion)
+                    val shouldReplaceContent = aiContent.isNotBlank() && aiContent != note.content.trim()
                     val updated = note.copy(
                         title = suggestion.suggestedTitle?.takeIf { it.isNotBlank() } ?: note.title,
                         category = suggestion.suggestedCategory ?: note.category,
                         priority = suggestion.suggestedPriority ?: note.priority,
-                        content = if (suggestion.todoItems.isNotEmpty() && note.category != NoteCategory.TODO) {
-                            buildString {
-                                appendLine(note.content.trim())
-                                appendLine()
-                                appendLine("待办建议：")
-                                suggestion.todoItems.forEach { appendLine("- $it") }
-                            }.trim()
+                        colorToken = defaultColorFor(
+                            suggestion.suggestedCategory ?: note.category,
+                            suggestion.suggestedPriority ?: note.priority,
+                        ),
+                        content = if (shouldReplaceContent) aiContent else note.content,
+                        originalContent = if (shouldReplaceContent) {
+                            note.originalContent ?: note.content
                         } else {
-                            note.content
+                            note.originalContent
                         },
                     )
-                    container.noteRepository.saveEditedNote(updated)
+                    val saved = container.noteRepository.saveNote(updated)
                     container.aiSuggestionRepository.markStatus(noteId, com.ydoc.app.model.AiSuggestionStatus.APPLIED)
-                    syncIfEnabled(updated)
+                    syncIfEnabled(saved)
                 }
             }.onSuccess {
                 _uiState.value = _uiState.value.copy(message = "AI 建议已应用。")
@@ -309,15 +356,24 @@ class AppViewModel(
                 val calendar = Calendar.getInstance().apply {
                     timeInMillis = reminder.scheduledAt
                 }
-                getApplication<Application>().startActivity(
-                    Intent(AlarmClock.ACTION_SET_ALARM).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        putExtra(AlarmClock.EXTRA_MESSAGE, reminder.title)
-                        putExtra(AlarmClock.EXTRA_HOUR, calendar.get(Calendar.HOUR_OF_DAY))
-                        putExtra(AlarmClock.EXTRA_MINUTES, calendar.get(Calendar.MINUTE))
-                        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
-                    },
-                )
+                val app = getApplication<Application>()
+                val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(AlarmClock.EXTRA_MESSAGE, reminder.title)
+                    putExtra(AlarmClock.EXTRA_HOUR, calendar.get(Calendar.HOUR_OF_DAY))
+                    putExtra(AlarmClock.EXTRA_MINUTES, calendar.get(Calendar.MINUTE))
+                    putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+                }
+                if (intent.resolveActivity(app.packageManager) == null) {
+                    error("未找到可处理系统闹钟的应用。")
+                }
+                try {
+                    app.startActivity(intent)
+                } catch (securityException: SecurityException) {
+                    throw IllegalStateException("系统拒绝了闹钟导出权限，请检查闹钟权限或系统限制。", securityException)
+                }
+            }.onSuccess {
+                _uiState.value = _uiState.value.copy(message = "已将提醒导出到系统闹钟。")
             }.onFailure {
                 _uiState.value = _uiState.value.copy(message = it.message ?: "打开系统闹钟失败。")
             }
@@ -449,6 +505,10 @@ class AppViewModel(
             withContext(Dispatchers.IO) {
                 runCatching {
                     val note = container.noteRepository.getNote(noteId)
+                    container.reminderRepository.getByNoteId(noteId).forEach { reminder ->
+                        container.reminderScheduler.cancel(reminder.id, reminder.noteId, reminder.title)
+                    }
+                    container.reminderRepository.deleteByNoteId(noteId)
                     if (note != null) {
                         container.syncOrchestrator.deleteRemote(note)
                         val relayConfig = _uiState.value.settings.relay
@@ -473,6 +533,10 @@ class AppViewModel(
                 runCatching {
                     val relayConfig = _uiState.value.settings.relay
                     trashedNotes.forEach { note ->
+                        container.reminderRepository.getByNoteId(note.id).forEach { reminder ->
+                            container.reminderScheduler.cancel(reminder.id, reminder.noteId, reminder.title)
+                        }
+                        container.reminderRepository.deleteByNoteId(note.id)
                         if (relayConfig.enabled && !note.relayFileId.isNullOrBlank()) {
                             runCatching { container.relayStorageClient.delete(note.relayFileId, relayConfig) }
                         }
@@ -507,21 +571,67 @@ class AppViewModel(
     }
 
     fun startRecording() {
-        if (!hasMicrophonePermission()) {
-            _uiState.value = _uiState.value.copy(requiresMicrophonePermission = true)
+        if (_uiState.value.recording.state != RecordingState.IDLE) {
+            _uiState.value = _uiState.value.copy(
+                message = when (_uiState.value.recording.state) {
+                    RecordingState.STARTING -> "正在准备录音，请稍候。"
+                    RecordingState.RECORDING -> "录音已经在进行中。"
+                    RecordingState.SAVING -> "正在保存录音，请稍候。"
+                    RecordingState.IDLE -> null
+                },
+            )
             return
         }
-        _uiState.value = _uiState.value.copy(captureExpanded = true)
+        if (!hasMicrophonePermission()) {
+            _uiState.value = _uiState.value.copy(
+                pendingQuickRecord = true,
+                requiresMicrophonePermission = true,
+            )
+            return
+        }
+        _uiState.value = _uiState.value.copy(
+            captureExpanded = true,
+            pendingQuickRecord = false,
+            recording = RecordingUiState(state = RecordingState.STARTING),
+        )
         viewModelScope.launch {
             val app = getApplication<Application>()
-            withContext(Dispatchers.IO) {
+            val startResult = withContext(Dispatchers.IO) {
                 runCatching {
+                    if (container.audioRecorder.isRecording) {
+                        container.audioRecorder.cancel()
+                        app.stopService(Intent(app, RecordingService::class.java))
+                    }
                     val output = container.audioRecorder.start()
-                    ContextCompat.startForegroundService(app, Intent(app, RecordingService::class.java))
+                    runCatching {
+                        ContextCompat.startForegroundService(app, Intent(app, RecordingService::class.java))
+                    }.getOrElse { serviceError ->
+                        container.audioRecorder.cancel()
+                        app.stopService(Intent(app, RecordingService::class.java))
+                        throw IllegalStateException("录音服务启动失败，请重试。", serviceError)
+                    }
                     output.path
                 }
-            }.onSuccess { path -> startRecordingTimer(path) }
-                .onFailure { _uiState.value = _uiState.value.copy(message = it.message ?: "录音启动失败。") }
+            }
+            val startedPath = startResult.getOrNull()
+            if (startedPath != null) {
+                startRecordingTimer(startedPath)
+            } else {
+                val error = startResult.exceptionOrNull()
+                withContext(Dispatchers.IO) {
+                    if (container.audioRecorder.isRecording) {
+                        container.audioRecorder.cancel()
+                    }
+                    app.stopService(Intent(app, RecordingService::class.java))
+                }
+                stopRecordingTimer()
+                pendingRecordingCompletionMessage = null
+                _uiState.value = _uiState.value.copy(
+                    captureExpanded = true,
+                    pendingQuickRecord = false,
+                    message = error?.message ?: "录音启动失败。",
+                )
+            }
         }
     }
 
@@ -545,13 +655,18 @@ class AppViewModel(
             stopRecordingTimer()
             noteResult.onSuccess { result ->
                 val syncError = runCatching { syncIfEnabled(result.note) }.exceptionOrNull()?.message
+                val completionMessage = pendingRecordingCompletionMessage
+                pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
                     captureExpanded = false,
-                    message = result.buildUserMessage(syncError),
+                    pendingQuickRecord = false,
+                    message = completionMessage ?: result.buildUserMessage(syncError),
                 )
             }.onFailure {
+                pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
                     captureExpanded = true,
+                    pendingQuickRecord = false,
                     message = it.message ?: "录音保存失败。",
                 )
             }
@@ -606,6 +721,7 @@ class AppViewModel(
             }
             stopRecordingTimer()
             _uiState.value = _uiState.value.copy(
+                pendingQuickRecord = false,
                 captureExpanded = _uiState.value.draft.content.isNotBlank(),
                 message = "录音已取消。",
             )
@@ -750,6 +866,16 @@ class AppViewModel(
         _uiState.value = _uiState.value.copy(settings = current.copy(ai = current.ai.copy(model = value), hasUnsavedChanges = true))
     }
 
+    fun updateAiPrompt(value: String) {
+        val current = _uiState.value.settings
+        _uiState.value = _uiState.value.copy(
+            settings = current.copy(
+                ai = current.ai.copy(promptSupplement = value),
+                hasUnsavedChanges = true,
+            ),
+        )
+    }
+
     fun updateAiEndpointMode(value: AiEndpointMode) {
         val current = _uiState.value.settings
         _uiState.value = _uiState.value.copy(
@@ -773,6 +899,16 @@ class AppViewModel(
     fun toggleAiAutoVoice(enabled: Boolean) {
         val current = _uiState.value.settings
         _uiState.value = _uiState.value.copy(settings = current.copy(ai = current.ai.copy(autoRunOnVoiceTranscribed = enabled), hasUnsavedChanges = true))
+    }
+
+    fun toggleAiAutoRetry(enabled: Boolean) {
+        val current = _uiState.value.settings
+        _uiState.value = _uiState.value.copy(
+            settings = current.copy(
+                ai = current.ai.copy(autoRetryOnTransientFailure = enabled),
+                hasUnsavedChanges = true,
+            ),
+        )
     }
 
     fun toggleWebDavEnabled(enabled: Boolean) {
@@ -892,7 +1028,7 @@ class AppViewModel(
     private fun stopRecordingTimer() {
         recordingTimerJob?.cancel()
         recordingTimerJob = null
-        _uiState.value = _uiState.value.copy(recording = RecordingUiState())
+        _uiState.value = _uiState.value.copy(recording = RecordingUiState(), pendingQuickRecord = false)
     }
 
     private suspend fun syncIfEnabled(note: Note, force: Boolean = false) {
@@ -954,6 +1090,27 @@ class AppViewModel(
         return parts.joinToString(" -> ").ifBlank { "未知错误" }
     }
 
+    private fun buildAppliedAiContent(
+        originalContent: String,
+        suggestion: com.ydoc.app.model.AiSuggestion,
+    ): String {
+        val summary = suggestion.summary.trim()
+        val todos = suggestion.todoItems.map(String::trim).filter(String::isNotBlank)
+        return buildString {
+            if (summary.isNotBlank()) {
+                append(summary)
+            }
+            if (todos.isNotEmpty()) {
+                if (isNotEmpty()) {
+                    appendLine()
+                    appendLine()
+                }
+                appendLine("待办建议：")
+                todos.forEach { appendLine("- $it") }
+            }
+        }.trim().ifBlank { originalContent.trim() }
+    }
+
     private suspend fun scheduleReminderForNote(
         noteId: String,
         title: String,
@@ -972,10 +1129,13 @@ class AppViewModel(
                 )
                 container.reminderScheduler.schedule(reminder)
             }
-        }.onSuccess {
+        }.onSuccess { result ->
             _uiState.value = _uiState.value.copy(
                 currentSection = NoteListSection.CALENDAR,
-                message = "提醒已创建。",
+                message = when (result.mode) {
+                    ReminderScheduleMode.EXACT -> "提醒已创建。"
+                    ReminderScheduleMode.INEXACT -> "提醒已创建，当前系统未授予精确闹钟能力，已降级为非精确提醒。"
+                },
             )
         }.onFailure {
             _uiState.value = _uiState.value.copy(message = it.message ?: "创建提醒失败。")

@@ -4,6 +4,10 @@ import com.ydoc.app.model.AiAnalyzeRequest
 import com.ydoc.app.model.AiAnalyzeResponse
 import com.ydoc.app.model.AiConfig
 import com.ydoc.app.model.AiEndpointMode
+import com.ydoc.app.model.defaultAiPromptTemplate
+import com.ydoc.app.model.isEffectivelyEmpty
+import com.ydoc.app.model.minimalSummaryResponse
+import java.io.IOException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -18,7 +22,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.IOException
 
 class RelayAiClient(
     private val httpClient: OkHttpClient,
@@ -30,12 +33,13 @@ class RelayAiClient(
 
     override suspend fun analyze(request: AiAnalyzeRequest, config: AiConfig): AiAnalyzeResponse {
         require(config.baseUrl.isNotBlank()) { "AI Base URL 未配置" }
-        return when (resolveMode(config)) {
+        val response = when (resolveMode(config)) {
             AiEndpointMode.RELAY -> analyzeViaRelay(request, config)
             AiEndpointMode.OPENAI -> analyzeViaOpenAi(request, config)
             AiEndpointMode.ANTHROPIC -> analyzeViaAnthropic(request, config)
             AiEndpointMode.AUTO -> error("AI 模式自动识别失败")
         }
+        return if (response.isEffectivelyEmpty()) request.minimalSummaryResponse() else response
     }
 
     override suspend fun test(config: AiConfig) {
@@ -56,45 +60,29 @@ class RelayAiClient(
 
     private fun detectProviderMode(config: AiConfig): AiEndpointMode? {
         if (config.token.isBlank()) return null
-        return runCatching {
-            val request = Request.Builder()
-                .url(buildProviderUrl(config.baseUrl, "models"))
-                .get()
-                .addHeader("Authorization", "Bearer ${config.token}")
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val payload = response.body?.string().orEmpty()
-                ensureNotHtml(payload, response.header("Content-Type"))
-                val root = json.parseToJsonElement(payload).jsonObject
-                val models = root["data"]?.jsonArray ?: return AiEndpointMode.OPENAI
-                if (models.isEmpty()) return AiEndpointMode.OPENAI
-                val supported = models
-                    .firstOrNull { model ->
-                        model.jsonObject["id"]?.jsonPrimitive?.contentOrNull == config.model
-                    }
-                    ?.jsonObject
-                    ?.get("supported_endpoint_types")
-                    ?.jsonArray
-                    ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                    .orEmpty()
-                when {
-                    "openai" in supported -> AiEndpointMode.OPENAI
-                    "anthropic" in supported -> AiEndpointMode.ANTHROPIC
-                    config.model.startsWith("claude", ignoreCase = true) -> AiEndpointMode.ANTHROPIC
-                    else -> AiEndpointMode.OPENAI
-                }
-            }
-        }.getOrNull()
+        val normalizedBase = config.baseUrl.lowercase()
+        if (normalizedBase.contains("anthropic")) return AiEndpointMode.ANTHROPIC
+
+        val request = Request.Builder()
+            .url(buildProviderUrl(config.baseUrl, "models"))
+            .get()
+            .addHeader("Authorization", "Bearer ${config.token}")
+            .build()
+
+        return httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val payload = response.body?.string().orEmpty()
+            ensureNotHtml(payload, response.header("Content-Type"))
+            val root = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
+            if (root["data"] != null) AiEndpointMode.OPENAI else null
+        }
     }
 
     private fun analyzeViaRelay(request: AiAnalyzeRequest, config: AiConfig): AiAnalyzeResponse {
         val endpoint = config.baseUrl.trimEnd('/') + "/ai/analyze-note"
-        val body = json.encodeToString(AiAnalyzeRequest.serializer(), request)
-            .toRequestBody("application/json".toMediaType())
         val httpRequest = Request.Builder()
             .url(endpoint)
-            .post(body)
+            .post(json.encodeToString(AiAnalyzeRequest.serializer(), request).toRequestBody(JSON_MEDIA_TYPE))
             .addHeader("Content-Type", "application/json")
             .apply {
                 if (config.token.isNotBlank()) {
@@ -103,31 +91,36 @@ class RelayAiClient(
             }
             .build()
 
-        httpClient.newCall(httpRequest).execute().use { response ->
+        return httpClient.newCall(httpRequest).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("AI 请求失败: HTTP ${response.code}")
             }
             val payload = response.body?.string().orEmpty()
             ensureNotHtml(payload, response.header("Content-Type"))
-            return json.decodeFromString(AiAnalyzeResponse.serializer(), payload)
+            decodeStructuredResponse(payload, AiEndpointMode.RELAY)
         }
     }
 
     private fun analyzeViaOpenAi(request: AiAnalyzeRequest, config: AiConfig): AiAnalyzeResponse {
         require(config.token.isNotBlank()) { "AI Token 未配置" }
+        val systemPrompt = buildSystemPrompt(request.prompt ?: config.promptSupplement, request)
         val body = buildJsonObject {
             put("model", JsonPrimitive(config.model.ifBlank { request.model }))
             put(
                 "messages",
                 buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", JsonPrimitive("system"))
-                        put("content", JsonPrimitive(SYSTEM_PROMPT))
-                    })
-                    add(buildJsonObject {
-                        put("role", JsonPrimitive("user"))
-                        put("content", JsonPrimitive(json.encodeToString(AiAnalyzeRequest.serializer(), request)))
-                    })
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("system"))
+                            put("content", JsonPrimitive(systemPrompt))
+                        },
+                    )
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive(encodeProviderRequest(request)))
+                        },
+                    )
                 },
             )
             put(
@@ -137,6 +130,7 @@ class RelayAiClient(
                 },
             )
         }
+
         val httpRequest = Request.Builder()
             .url(buildProviderUrl(config.baseUrl, "chat/completions"))
             .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
@@ -144,13 +138,13 @@ class RelayAiClient(
             .addHeader("Content-Type", "application/json")
             .build()
 
-        httpClient.newCall(httpRequest).execute().use { response ->
+        return httpClient.newCall(httpRequest).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("AI 请求失败: HTTP ${response.code}")
             }
             val payload = response.body?.string().orEmpty()
             ensureNotHtml(payload, response.header("Content-Type"))
-            val root = json.parseToJsonElement(payload).jsonObject
+            val root = parseEnvelope(payload, AiEndpointMode.OPENAI)
             val content = root["choices"]
                 ?.jsonArray
                 ?.firstOrNull()
@@ -160,27 +154,35 @@ class RelayAiClient(
                 ?.get("content")
                 ?.jsonPrimitive
                 ?.contentOrNull
-                ?: throw IOException("AI 返回缺少 choices.message.content")
-            return decodeStructuredResponse(content)
+                ?: throw buildStructuredOutputError(
+                    mode = AiEndpointMode.OPENAI,
+                    message = "接口返回缺少 choices.message.content 字段",
+                    rawContent = payload,
+                )
+            decodeStructuredResponse(content, AiEndpointMode.OPENAI)
         }
     }
 
     private fun analyzeViaAnthropic(request: AiAnalyzeRequest, config: AiConfig): AiAnalyzeResponse {
         require(config.token.isNotBlank()) { "AI Token 未配置" }
+        val systemPrompt = buildSystemPrompt(request.prompt ?: config.promptSupplement, request)
         val body = buildJsonObject {
             put("model", JsonPrimitive(config.model.ifBlank { request.model }))
             put("max_tokens", JsonPrimitive(1200))
-            put("system", JsonPrimitive(SYSTEM_PROMPT))
+            put("system", JsonPrimitive(systemPrompt))
             put(
                 "messages",
                 buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", JsonPrimitive("user"))
-                        put("content", JsonPrimitive(json.encodeToString(AiAnalyzeRequest.serializer(), request)))
-                    })
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive(encodeProviderRequest(request)))
+                        },
+                    )
                 },
             )
         }
+
         val httpRequest = Request.Builder()
             .url(buildProviderUrl(config.baseUrl, "messages"))
             .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
@@ -189,23 +191,35 @@ class RelayAiClient(
             .addHeader("Content-Type", "application/json")
             .build()
 
-        httpClient.newCall(httpRequest).execute().use { response ->
+        return httpClient.newCall(httpRequest).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("AI 请求失败: HTTP ${response.code}")
             }
             val payload = response.body?.string().orEmpty()
             ensureNotHtml(payload, response.header("Content-Type"))
-            val root = json.parseToJsonElement(payload).jsonObject
+            val root = parseEnvelope(payload, AiEndpointMode.ANTHROPIC)
             val content = root["content"]
                 ?.jsonArray
-                ?.mapNotNull { part ->
-                    part.jsonObject["text"]?.jsonPrimitive?.contentOrNull
+                ?.firstOrNull { block ->
+                    block.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "text"
                 }
-                ?.joinToString("\n")
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?: throw IOException("AI 返回缺少 content[].text")
-            return decodeStructuredResponse(content)
+                ?.jsonObject
+                ?.get("text")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                ?: root["content"]
+                    ?.jsonArray
+                    ?.firstOrNull()
+                    ?.jsonObject
+                    ?.get("text")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+                ?: throw buildStructuredOutputError(
+                    mode = AiEndpointMode.ANTHROPIC,
+                    message = "接口返回缺少 content[].text 字段",
+                    rawContent = payload,
+                )
+            decodeStructuredResponse(content, AiEndpointMode.ANTHROPIC)
         }
     }
 
@@ -252,10 +266,12 @@ class RelayAiClient(
             put(
                 "messages",
                 buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", JsonPrimitive("user"))
-                        put("content", JsonPrimitive("reply with ok"))
-                    })
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive("reply with ok"))
+                        },
+                    )
                 },
             )
         }
@@ -279,9 +295,45 @@ class RelayAiClient(
         }
     }
 
-    private fun decodeStructuredResponse(content: String): AiAnalyzeResponse {
-        val normalized = content.stripMarkdownCodeFence()
-        return json.decodeFromString(AiAnalyzeResponse.serializer(), normalized)
+    private fun decodeStructuredResponse(content: String, mode: AiEndpointMode): AiAnalyzeResponse {
+        val normalized = normalizeStructuredResponse(content, mode)
+        return try {
+            json.decodeFromString(AiAnalyzeResponse.serializer(), normalized)
+        } catch (error: Exception) {
+            if (error is IOException) throw error
+            throw buildStructuredOutputError(
+                mode = mode,
+                message = "返回的 JSON 格式损坏或字段不匹配",
+                rawContent = normalized,
+                cause = error,
+            )
+        }
+    }
+
+    private fun parseEnvelope(payload: String, mode: AiEndpointMode): JsonObject =
+        try {
+            json.parseToJsonElement(payload).jsonObject
+        } catch (error: Exception) {
+            throw buildStructuredOutputError(
+                mode = mode,
+                message = "接口返回了非 JSON 响应",
+                rawContent = payload,
+                cause = error,
+            )
+        }
+
+    private fun normalizeStructuredResponse(content: String, mode: AiEndpointMode): String {
+        val stripped = content.stripMarkdownCodeFence()
+        val candidate = when {
+            stripped.looksLikeJsonObject() -> stripped
+            else -> stripped.extractFirstJsonObject()
+        }
+        return candidate?.trim()
+            ?: throw buildStructuredOutputError(
+                mode = mode,
+                message = "返回了非 JSON 文本，请检查模型输出约束",
+                rawContent = content,
+            )
     }
 
     private fun validateModelAvailability(payload: String, configuredModel: String) {
@@ -297,11 +349,12 @@ class RelayAiClient(
 
     private fun ensureNotHtml(payload: String, contentType: String?) {
         val normalized = payload.trimStart()
-        if (contentType?.contains("text/html", ignoreCase = true) == true ||
+        if (
+            contentType?.contains("text/html", ignoreCase = true) == true ||
             normalized.startsWith("<!doctype", ignoreCase = true) ||
             normalized.startsWith("<html", ignoreCase = true)
         ) {
-            throw IOException("当前 AI Base URL 返回的是网页，不是 AI JSON 接口。请检查你填的是 Relay 地址，还是模型服务的 API 地址。")
+            throw IOException("当前 AI Base URL 返回的是网页，不是 AI JSON 接口。请检查你填写的是 Relay 地址，还是模型服务的 API 地址。")
         }
     }
 
@@ -314,6 +367,133 @@ class RelayAiClient(
         return fenced?.trim() ?: trimmed
     }
 
+    private fun String.looksLikeJsonObject(): Boolean {
+        val trimmed = trim()
+        return trimmed.startsWith("{") && trimmed.endsWith("}")
+    }
+
+    private fun String.extractFirstJsonObject(): String? {
+        var searchStart = indexOf('{')
+        while (searchStart >= 0) {
+            var depth = 0
+            var inString = false
+            var escaping = false
+
+            for (index in searchStart until length) {
+                val ch = this[index]
+                if (inString) {
+                    when {
+                        escaping -> escaping = false
+                        ch == '\\' -> escaping = true
+                        ch == '"' -> inString = false
+                    }
+                    continue
+                }
+
+                when (ch) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) {
+                            return substring(searchStart, index + 1)
+                        }
+                    }
+                }
+            }
+
+            searchStart = indexOf('{', startIndex = searchStart + 1)
+        }
+        return null
+    }
+
+    private fun buildStructuredOutputError(
+        mode: AiEndpointMode,
+        message: String,
+        rawContent: String,
+        cause: Throwable? = null,
+    ): IOException {
+        val preview = rawContent.safePreview()
+        val detail = buildString {
+            append(mode.displayName())
+            append(' ')
+            append(message)
+            append("。响应预览：")
+            append(preview)
+        }
+        return IOException(detail, cause)
+    }
+
+    private fun String.safePreview(maxLength: Int = 220): String {
+        val compact = replace(Regex("\\s+"), " ").trim()
+        if (compact.isBlank()) return "(empty)"
+        return if (compact.length <= maxLength) compact else compact.take(maxLength) + "..."
+    }
+
+    private fun AiEndpointMode.displayName(): String = when (this) {
+        AiEndpointMode.RELAY -> "Relay"
+        AiEndpointMode.OPENAI -> "OpenAI"
+        AiEndpointMode.ANTHROPIC -> "Anthropic"
+        AiEndpointMode.AUTO -> "AI"
+    }
+
+    private fun encodeProviderRequest(request: AiAnalyzeRequest): String =
+        json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                put("noteId", JsonPrimitive(request.noteId))
+                put("title", JsonPrimitive(request.title))
+                put("content", JsonPrimitive(request.content))
+                put("source", JsonPrimitive(request.source))
+                put("category", JsonPrimitive(request.category))
+                put("priority", JsonPrimitive(request.priority))
+                request.transcript?.let { put("transcript", JsonPrimitive(it)) }
+                put("trigger", JsonPrimitive(request.trigger))
+                put("model", JsonPrimitive(request.model))
+                put("currentTimeText", JsonPrimitive(request.currentTimeText))
+                put("currentTimezone", JsonPrimitive(request.currentTimezone))
+                put("currentTimeEpochMs", JsonPrimitive(request.currentTimeEpochMs))
+            },
+        )
+
+    private fun buildSystemPrompt(prompt: String, request: AiAnalyzeRequest): String {
+        val basePrompt = buildBasePrompt(
+            supplement = prompt,
+            request = request,
+        )
+        return buildString {
+            appendLine("Current system time: ${request.currentTimeText}")
+            appendLine("Current system timezone: ${request.currentTimezone}")
+            appendLine("Current system Unix milliseconds: ${request.currentTimeEpochMs}")
+            appendLine("Resolve all relative dates and times against this context.")
+            appendLine()
+            append(basePrompt)
+            append("\n\n")
+            append(STRUCTURED_OUTPUT_REQUIREMENTS)
+        }
+    }
+
+    private fun buildBasePrompt(supplement: String, request: AiAnalyzeRequest): String {
+        val renderedSupplement = renderPromptVariables(
+            prompt = supplement.trim(),
+            request = request,
+        )
+        return buildString {
+            append(defaultAiPromptTemplate())
+            if (renderedSupplement.isNotBlank()) {
+                append("\n\n")
+                appendLine("Additional instructions from the user:")
+                append(renderedSupplement)
+            }
+        }
+    }
+
+    private fun renderPromptVariables(prompt: String, request: AiAnalyzeRequest): String =
+        prompt
+            .replace("{{current_time}}", request.currentTimeText)
+            .replace("{{current_timezone}}", request.currentTimezone)
+            .replace("{{current_time_ms}}", request.currentTimeEpochMs.toString())
+
     private fun JsonArray?.isNullOrEmpty(): Boolean = this == null || this.isEmpty()
 
     private fun buildProviderUrl(baseUrl: String, path: String): String {
@@ -323,9 +503,25 @@ class RelayAiClient(
     }
 
     companion object {
-        private const val SYSTEM_PROMPT =
-            "Return only JSON with keys summary, suggestedTitle, suggestedCategory, suggestedPriority, todoItems, extractedEntities, reminderCandidates. suggestedCategory must be NOTE, TODO, TASK, or REMINDER. suggestedPriority must be LOW, MEDIUM, HIGH, or URGENT. reminderCandidates[].scheduledAt must be unix milliseconds."
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+        private val STRUCTURED_OUTPUT_REQUIREMENTS =
+            """
+            Return exactly one raw JSON object and nothing else.
+            Do not use markdown fences.
+            Do not add explanations, headings, notes, comments, or trailing text.
+            Always provide a non-empty summary, even if there are no todo items or reminder candidates.
+            The JSON object may only contain these keys: summary, suggestedTitle, suggestedCategory, suggestedPriority, todoItems, extractedEntities, reminderCandidates.
+            Use null for missing suggestedTitle, suggestedCategory, and suggestedPriority.
+            Use [] for empty todoItems, extractedEntities, and reminderCandidates.
+            suggestedCategory must be NOTE, TODO, TASK, or REMINDER.
+            suggestedPriority must be LOW, MEDIUM, HIGH, or URGENT.
+            extractedEntities items must be objects with keys label and value.
+            reminderCandidates items must be objects with keys title, scheduledAt, and reason.
+            reminderCandidates[].scheduledAt must be unix milliseconds.
+            Valid example JSON object: {"summary":"The user wants a reminder for tomorrow at 9 AM to submit the weekly report.","suggestedTitle":"Submit weekly report","suggestedCategory":"REMINDER","suggestedPriority":"HIGH","todoItems":["Submit weekly report"],"extractedEntities":[{"label":"time","value":"tomorrow 9 AM"},{"label":"task","value":"weekly report"}],"reminderCandidates":[{"title":"Submit weekly report","scheduledAt":1736384400000,"reason":"The user explicitly asked to be reminded tomorrow at 9 AM."}]}
+            """
+                .trimIndent()
+                .replace('\n', ' ')
     }
 }

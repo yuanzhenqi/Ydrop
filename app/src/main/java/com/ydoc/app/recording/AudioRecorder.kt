@@ -16,6 +16,9 @@ class AudioRecorder(
     private var currentFile: File? = null
     private var startedAtMs: Long = 0L
 
+    val isRecording: Boolean
+        get() = recorder != null
+
     data class RecordingOutput(
         val path: String,
         val format: String,

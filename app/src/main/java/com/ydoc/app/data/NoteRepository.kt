@@ -141,6 +141,17 @@ class NoteRepository(
         return updated
     }
 
+    suspend fun saveNote(note: Note): Note {
+        val updated = note.copy(
+            updatedAt = System.currentTimeMillis(),
+            status = NoteStatus.LOCAL_ONLY,
+            lastSyncedAt = null,
+            syncError = null,
+        )
+        noteDao.update(updated.toEntity())
+        return updated
+    }
+
     suspend fun attachRelayInfo(
         note: Note,
         relayFileId: String,
@@ -217,6 +228,7 @@ class NoteRepository(
             val merged = existing.copy(
                 title = note.title,
                 content = note.content,
+                originalContent = existing.originalContent,
                 source = note.source,
                 category = note.category,
                 priority = note.priority,

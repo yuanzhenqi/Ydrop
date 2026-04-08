@@ -8,6 +8,7 @@ data class NoteEntity(
     @PrimaryKey val id: String,
     val title: String,
     val content: String,
+    val originalContent: String?,
     val source: String,
     val category: String,
     val priority: String,

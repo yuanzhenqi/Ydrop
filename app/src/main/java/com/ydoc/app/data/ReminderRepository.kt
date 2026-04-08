@@ -17,6 +17,8 @@ class ReminderRepository(
 
     suspend fun getReminder(id: String): ReminderEntry? = reminderEntryDao.getById(id)?.toModel()
 
+    suspend fun getByNoteId(noteId: String): List<ReminderEntry> = reminderEntryDao.getByNoteId(noteId).map { it.toModel() }
+
     suspend fun getScheduled(): List<ReminderEntry> = reminderEntryDao.getScheduled().map { it.toModel() }
 
     suspend fun createReminder(
@@ -51,6 +53,10 @@ class ReminderRepository(
     suspend fun cancel(id: String) = updateStatus(id, ReminderStatus.CANCELLED)
 
     suspend fun dismiss(id: String) = updateStatus(id, ReminderStatus.DISMISSED)
+
+    suspend fun deleteByNoteId(noteId: String) {
+        reminderEntryDao.deleteByNoteId(noteId)
+    }
 
     private suspend fun updateStatus(id: String, status: ReminderStatus) {
         reminderEntryDao.updateStatus(id, status.name, System.currentTimeMillis())

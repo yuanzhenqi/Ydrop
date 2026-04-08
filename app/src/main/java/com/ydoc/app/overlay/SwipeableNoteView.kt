@@ -45,6 +45,7 @@ class SwipeableNoteView(
 
     interface Listener {
         fun onClick(noteId: String)
+        fun onToggleExpanded(noteId: String)
         fun onQuickAction(noteId: String, action: OverlayNoteQuickAction)
     }
 
@@ -66,6 +67,7 @@ class SwipeableNoteView(
     private val typeChip: TextView
     private val pinIcon: AppCompatImageView
     private val timeText: TextView
+    private val expandButton: AppCompatImageButton
     private val summaryText: TextView
     private val actionRow: LinearLayout
 
@@ -83,11 +85,9 @@ class SwipeableNoteView(
             clipToPadding = true
             outlineProvider = ViewOutlineProvider.BACKGROUND
             clipToOutline = true
-            elevation = dpToPx(3).toFloat()
-            setPadding(dpToPx(10))
-            layoutParams = LayoutParams(dpToPx(188), LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.CENTER
-            }
+            elevation = dpToPx(1).toFloat()
+            setPadding(dpToPx(7))
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         }
 
         topRow = LinearLayout(context).apply {
@@ -110,16 +110,26 @@ class SwipeableNoteView(
             ellipsize = TextUtils.TruncateAt.END
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
         }
+        expandButton = AppCompatImageButton(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dpToPx(24), dpToPx(24)).apply {
+                marginStart = dpToPx(6)
+            }
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dpToPx(4))
+            setImageResource(android.R.drawable.arrow_down_float)
+            contentDescription = "展开详情"
+        }
         topRow.addView(typeChip)
         topRow.addView(pinIcon)
         topRow.addView(timeText)
+        topRow.addView(expandButton)
 
         summaryText = TextView(context).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            maxLines = 1
+            maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dpToPx(6)
+                topMargin = dpToPx(5)
             }
         }
 
@@ -127,7 +137,7 @@ class SwipeableNoteView(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.START
             layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dpToPx(6)
+                topMargin = dpToPx(5)
             }
         }
 
@@ -141,19 +151,20 @@ class SwipeableNoteView(
         this.noteId = note.id
         this.listener = listener
 
-        val palette = paletteFor(note)
+        val palette = displayPaletteFor(note)
         applyPalette(palette)
         bindHeader(note, palette)
         bindSummary(note)
         bindActions(note, palette)
+        expandButton.setOnClickListener { listener.onToggleExpanded(note.id) }
 
         setOnClickListener { listener.onClick(note.id) }
     }
 
     private fun bindHeader(note: Note, palette: Palette) {
-        typeChip.text = chipLabel(note)
+        typeChip.text = displayChipLabel(note)
         timeText.text = DateUtils.getRelativeTimeSpanString(
-            note.updatedAt,
+            note.overlayDisplayTimestamp(),
             System.currentTimeMillis(),
             DateUtils.MINUTE_IN_MILLIS,
             DateUtils.FORMAT_ABBREV_RELATIVE,
@@ -189,10 +200,12 @@ class SwipeableNoteView(
     }
 
     private fun applyPalette(palette: Palette) {
-        cardView.background = roundedRect(palette.background, dpToPx(16).toFloat())
+        cardView.background = roundedRect(palette.background, dpToPx(14).toFloat())
         typeChip.background = roundedRect(palette.chipBackground, dpToPx(10).toFloat())
         typeChip.setTextColor(palette.chipText)
         summaryText.setTextColor(palette.primaryText)
+        expandButton.background = roundedRect(palette.actionBackground, dpToPx(10).toFloat())
+        expandButton.imageTintList = ColorStateList.valueOf(palette.actionTint)
     }
 
     private fun quickActionsFor(note: Note): List<OverlayNoteQuickAction> =
@@ -307,6 +320,73 @@ class SwipeableNoteView(
             cornerRadius = radius
             setColor(color)
         }
+
+    private fun displayChipLabel(note: Note): String {
+        val categoryLabel = when (note.category) {
+            NoteCategory.NOTE -> "便签"
+            NoteCategory.TODO -> "待办"
+            NoteCategory.TASK -> "任务"
+            NoteCategory.REMINDER -> "提醒"
+        }
+        return if (note.source == NoteSource.VOICE) "$categoryLabel · 语音" else categoryLabel
+    }
+
+    private fun displayPaletteFor(note: Note): Palette = when (note.overlayPaletteKey()) {
+        OverlayPaletteKey.AMBER -> Palette(
+            background = 0xFFF2BE57.toInt(),
+            primaryText = 0xFF50360A.toInt(),
+            secondaryText = 0xFF745114.toInt(),
+            chipBackground = 0x24FFFFFF,
+            chipText = 0xFF50360A.toInt(),
+            actionBackground = 0x24FFFFFF,
+            actionTint = 0xFF50360A.toInt(),
+        )
+        OverlayPaletteKey.SKY -> Palette(
+            background = 0xFF5BA5F8.toInt(),
+            primaryText = 0xFFF9FBFF.toInt(),
+            secondaryText = 0xFFD8E7FF.toInt(),
+            chipBackground = 0x26FFFFFF,
+            chipText = 0xFFFFFFFF.toInt(),
+            actionBackground = 0x24FFFFFF,
+            actionTint = 0xFFFFFFFF.toInt(),
+        )
+        OverlayPaletteKey.ROSE -> Palette(
+            background = 0xFFAF70F0.toInt(),
+            primaryText = 0xFFFDFCFF.toInt(),
+            secondaryText = 0xFFEBDFFF.toInt(),
+            chipBackground = 0x26FFFFFF,
+            chipText = 0xFFFFFFFF.toInt(),
+            actionBackground = 0x22FFFFFF,
+            actionTint = 0xFFFFFFFF.toInt(),
+        )
+        OverlayPaletteKey.ARCHIVE -> Palette(
+            background = 0xFFD4DEE7.toInt(),
+            primaryText = 0xFF22303D.toInt(),
+            secondaryText = 0xFF4B6172.toInt(),
+            chipBackground = 0x26FFFFFF,
+            chipText = 0xFF22303D.toInt(),
+            actionBackground = 0x33FFFFFF,
+            actionTint = 0xFF22303D.toInt(),
+        )
+        OverlayPaletteKey.TRASH -> Palette(
+            background = 0xFFF3C7C7.toInt(),
+            primaryText = 0xFF5E2323.toInt(),
+            secondaryText = 0xFF8A4A4A.toInt(),
+            chipBackground = 0x26FFFFFF,
+            chipText = 0xFF5E2323.toInt(),
+            actionBackground = 0x33FFFFFF,
+            actionTint = 0xFF5E2323.toInt(),
+        )
+        OverlayPaletteKey.SAGE -> Palette(
+            background = 0xFFA6D3B0.toInt(),
+            primaryText = 0xFF173227.toInt(),
+            secondaryText = 0xFF355647.toInt(),
+            chipBackground = 0x22FFFFFF,
+            chipText = 0xFF173227.toInt(),
+            actionBackground = 0x24FFFFFF,
+            actionTint = 0xFF173227.toInt(),
+        )
+    }
 
     private fun paletteFor(note: Note): Palette = when {
         note.source == NoteSource.VOICE -> Palette(

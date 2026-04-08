@@ -4,6 +4,7 @@ data class Note(
     val id: String,
     val title: String,
     val content: String,
+    val originalContent: String? = null,
     val source: NoteSource,
     val category: NoteCategory,
     val priority: NotePriority,

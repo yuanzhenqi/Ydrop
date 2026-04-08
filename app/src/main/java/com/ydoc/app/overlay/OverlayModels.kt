@@ -40,6 +40,10 @@ sealed interface OverlayStripItem {
         val note: Note,
     ) : OverlayStripItem
 
+    data class ExpandedNoteItem(
+        val note: Note,
+    ) : OverlayStripItem
+
     data class EditingNoteItem(
         val note: Note,
         val draft: String,
@@ -59,6 +63,7 @@ data class OverlayUiState(
     val recordingSeconds: Int = 0,
     val recordingOrigin: OverlayRecordingOrigin = OverlayRecordingOrigin.NONE,
     val entryHoldActive: Boolean = false,
+    val expandedNoteId: String? = null,
     val editingNoteId: String? = null,
     val editingDraft: String = "",
     val editingCategory: NoteCategory = NoteCategory.NOTE,

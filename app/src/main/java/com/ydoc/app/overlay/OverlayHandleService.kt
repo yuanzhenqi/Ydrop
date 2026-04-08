@@ -1,5 +1,6 @@
 ﻿package com.ydoc.app.overlay
 
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -29,6 +30,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
 import android.view.WindowManager
+import android.view.animation.OvershootInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.util.TypedValue
@@ -100,6 +102,8 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     private var globalLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
     private var recordingTimerJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
+    private var railWidthAnimator: ValueAnimator? = null
+    private var appliedRailWidthPx: Int = 0
     private var handleTopY: Int = 0
     private var handleAlpha: Float = 0.84f
     private var handleSizeDp: Int = 24
@@ -151,6 +155,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     override fun onDestroy() {
         super.onDestroy()
         recordingTimerJob?.cancel()
+        railWidthAnimator?.cancel()
         dismissLayer?.let { layer ->
             globalLayoutListener?.let { listener ->
                 layer.viewTreeObserver.removeOnGlobalLayoutListener(listener)
@@ -304,6 +309,9 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                 activeNotes = notes
                 if (overlayState.editingNoteId != null && notes.none { it.id == overlayState.editingNoteId }) {
                     overlayState = overlayState.clearEditingState()
+                }
+                if (overlayState.expandedNoteId != null && notes.none { it.id == overlayState.expandedNoteId }) {
+                    overlayState = overlayState.copy(expandedNoteId = null)
                 }
                 refreshStripItems()
                 if (overlayState.surfaceState == OverlaySurfaceState.STRIP_EXPANDED && !overlayState.isEntryHoldRecording()) {
@@ -583,6 +591,8 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                             priority = overlayState.editingPriority,
                         ),
                     )
+                } else if (note.id == overlayState.expandedNoteId) {
+                    add(OverlayStripItem.ExpandedNoteItem(note))
                 } else {
                     add(OverlayStripItem.NoteStripItem(note))
                 }
@@ -614,6 +624,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             isRecording = false,
             recordingOrigin = OverlayRecordingOrigin.NONE,
             entryHoldActive = false,
+            expandedNoteId = null,
         ).clearEditingState()
         suppressImeCollapse = false
         refreshStripItems()
@@ -632,6 +643,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             composerMode = OverlayComposerMode.RECORDING,
             recordingOrigin = OverlayRecordingOrigin.NONE,
             entryHoldActive = false,
+            expandedNoteId = null,
         ).clearEditingState()
         hideKeyboard()
         refreshStripItems()
@@ -675,6 +687,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             recordingSeconds = 0,
             recordingOrigin = OverlayRecordingOrigin.NONE,
             entryHoldActive = false,
+            expandedNoteId = savedNote?.id ?: overlayState.expandedNoteId,
         ).clearEditingState()
         hideKeyboard()
         updateWindowFocusability(false)
@@ -687,6 +700,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         renderSelectionState()
         updateRootOrder()
         updateHandleMetrics()
+        updateRailWidth()
 
         when (overlayState.surfaceState) {
             OverlaySurfaceState.HANDLE_COLLAPSED -> {
@@ -803,11 +817,81 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     }
 
     private fun updateStripHeight() {
-        val maxHeight = (resources.displayMetrics.heightPixels * 0.66f).toInt()
+        val maxHeight = (resources.displayMetrics.heightPixels * 0.73f).toInt()
         stripList.layoutParams = stripList.layoutParams.apply {
-            height = maxHeight.coerceAtLeast(dpToPx(260))
+            height = maxHeight.coerceAtLeast(dpToPx(320))
         }
         stripList.requestLayout()
+    }
+
+    private fun updateRailWidth() {
+        val targetWidth = targetRailWidthPx()
+        if (targetWidth == appliedRailWidthPx) return
+
+        val currentWidth = appliedRailWidthPx.takeIf { it > 0 } ?: targetWidth
+        railWidthAnimator?.cancel()
+        if (!rootView.isLaidOut || abs(currentWidth - targetWidth) < dpToPx(8)) {
+            applyRailWidthImmediate(targetWidth)
+            return
+        }
+
+        railWidthAnimator = ValueAnimator.ofInt(currentWidth, targetWidth).apply {
+            duration = 180L
+            interpolator = OvershootInterpolator(0.65f)
+            addUpdateListener { animator ->
+                applyRailWidthImmediate(animator.animatedValue as Int)
+                updateOverlayPosition()
+            }
+            start()
+        }
+    }
+
+    private fun targetRailWidthPx(): Int {
+        val baseWidth = railBaseWidthPx()
+        if (overlayState.expandedNoteId == null && overlayState.editingNoteId == null) {
+            return baseWidth
+        }
+
+        val note = activeNotes.firstOrNull {
+            it.id == overlayState.editingNoteId || it.id == overlayState.expandedNoteId
+        } ?: return baseWidth
+        val bodyContent = note.overlayBodyContent()
+        val primaryText = if (overlayState.editingNoteId == note.id) {
+            overlayState.editingDraft.trim().ifBlank { note.overlayEditingSeedText() }
+        } else {
+            bodyContent.primaryText
+        }
+        return measureOverlayRailWidth(
+            primaryText = primaryText,
+            originalText = if (overlayState.expandedNoteId == note.id) bodyContent.originalText else null,
+            maxWidthPx = railExpandedMaxWidthPx(),
+        ).coerceAtLeast(baseWidth)
+    }
+
+    private fun railBaseWidthPx(): Int {
+        val target = dpToPx(260)
+        val minimum = dpToPx(236)
+        val reserved = dpToPx(handleSizeDp + 72)
+        val available = (resources.displayMetrics.widthPixels - reserved).coerceAtLeast(minimum)
+        return target.coerceAtMost(available)
+    }
+
+    private fun railExpandedMaxWidthPx(): Int {
+        val reserved = dpToPx(handleSizeDp + 36)
+        val safeByScreen = (resources.displayMetrics.widthPixels * 0.72f).toInt()
+        val safeByWorkspace = resources.displayMetrics.widthPixels - reserved
+        return minOf(safeByScreen, safeByWorkspace).coerceAtLeast(railBaseWidthPx())
+    }
+
+    private fun applyRailWidthImmediate(width: Int) {
+        appliedRailWidthPx = width
+        stripList.layoutParams = stripList.layoutParams.apply {
+            this.width = width
+        }
+        composerPanel.layoutParams = composerPanel.layoutParams.apply {
+            this.width = width
+        }
+        railContainer.requestLayout()
     }
 
     private fun updateWindowFocusability(focusable: Boolean) {
@@ -841,11 +925,13 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             val measuredHeight = rootView.measuredHeight.coerceAtLeast(dpToPx(92))
             val screenHeight = resources.displayMetrics.heightPixels
             val margin = dpToPx(16)
-            val targetY = if (
-                overlayState.surfaceState == OverlaySurfaceState.COMPOSER_ACTIVE &&
-                overlayState.composerMode == OverlayComposerMode.TEXT &&
-                overlayState.imeVisible
-            ) {
+            val shouldAvoidIme = overlayState.imeVisible && (
+                (overlayState.surfaceState == OverlaySurfaceState.COMPOSER_ACTIVE &&
+                    overlayState.composerMode == OverlayComposerMode.TEXT) ||
+                    (overlayState.surfaceState == OverlaySurfaceState.STRIP_EXPANDED &&
+                        overlayState.editingNoteId != null)
+                )
+            val targetY = if (shouldAvoidIme) {
                 (screenHeight - overlayState.imeInsetBottom - measuredHeight - margin).coerceAtLeast(margin)
             } else {
                 handleTopY.coerceIn(margin, (screenHeight - measuredHeight - margin).coerceAtLeast(margin))
@@ -881,14 +967,19 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         stripList.post {
             repeat(stripList.childCount) { index ->
                 val child = stripList.getChildAt(index)
-                val direction = if (overlayState.dockSide == OverlayDockSide.RIGHT) 1f else -1f
                 child.alpha = 0f
-                child.translationX = direction * dpToPx(18).toFloat()
+                child.translationX = 0f
+                child.translationY = dpToPx(10).toFloat()
+                child.scaleX = 0.96f
+                child.scaleY = 0.96f
                 child.animate()
                     .alpha(1f)
-                    .translationX(0f)
-                    .setDuration(180L)
-                    .setStartDelay(index * 45L)
+                    .translationY(0f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(220L)
+                    .setStartDelay(index * 32L)
+                    .setInterpolator(OvershootInterpolator(0.75f))
                     .start()
             }
         }
@@ -916,6 +1007,27 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     override fun onCancelRecordingFromEntry() {
         serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
             cancelEntryHoldRecording()
+        }
+    }
+
+    override fun onToggleExpanded(noteId: String) {
+        if (overlayState.editingNoteId != null) return
+        overlayState = overlayState.copy(
+            expandedNoteId = if (overlayState.expandedNoteId == noteId) null else noteId,
+        )
+        refreshStripItems()
+        render()
+        stripList.post {
+            val index = overlayState.stripItems.indexOfFirst {
+                when (it) {
+                    is OverlayStripItem.NoteStripItem -> it.note.id == noteId
+                    is OverlayStripItem.ExpandedNoteItem -> it.note.id == noteId
+                    else -> false
+                }
+            }
+            if (index >= 0) {
+                stripList.smoothScrollToPosition(index)
+            }
         }
     }
 
@@ -953,8 +1065,14 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
 
     override fun onCancelEditing() {
         overlayState = overlayState.clearEditingState()
+        hideKeyboard()
+        updateWindowFocusability(false)
         refreshStripItems()
         render()
+    }
+
+    override fun onExpandedContentLayoutChanged() {
+        rootView.post { updateOverlayPosition() }
     }
 
     override fun onQuickAction(noteId: String, action: OverlayNoteQuickAction) {
@@ -1144,11 +1262,13 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             ?: return
         overlayState = overlayState.copy(
             editingNoteId = note.id,
-            editingDraft = note.content,
+            editingDraft = note.overlayEditingSeedText(),
             editingCategory = note.category,
             editingPriority = note.priority,
+            expandedNoteId = null,
         )
         refreshStripItems()
+        updateWindowFocusability(true)
         render()
         stripList.post {
             val index = overlayState.stripItems.indexOfFirst {
@@ -1156,6 +1276,10 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             }
             if (index >= 0) {
                 stripList.smoothScrollToPosition(index)
+                stripList.post {
+                    stripAdapter.focusEditingInput(stripList, noteId)
+                    updateOverlayPosition()
+                }
             }
         }
     }
@@ -1179,6 +1303,8 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             )
         } ?: run {
             overlayState = overlayState.clearEditingState()
+            hideKeyboard()
+            updateWindowFocusability(false)
             refreshStripItems()
             render()
             toast("这条便签已不在当前列表。")
@@ -1186,6 +1312,8 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         }
 
         overlayState = overlayState.clearEditingState()
+        hideKeyboard()
+        updateWindowFocusability(false)
         refreshStripItems()
         render()
         syncIfEnabled(updated)
@@ -1341,7 +1469,10 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     private fun hideKeyboard() {
         suppressImeCollapse = true
         val inputMethodManager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        inputMethodManager.hideSoftInputFromWindow(draftInput.windowToken, 0)
+        val focusedView = rootView.findFocus()
+        val windowToken = focusedView?.windowToken ?: draftInput.windowToken
+        inputMethodManager.hideSoftInputFromWindow(windowToken, 0)
+        focusedView?.clearFocus()
         draftInput.clearFocus()
         rootView.postDelayed({ suppressImeCollapse = false }, 160L)
     }

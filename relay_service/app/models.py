@@ -52,6 +52,10 @@ class AiAnalyzeRequest(BaseModel):
     transcript: str | None = None
     trigger: str
     model: str
+    currentTimeText: str | None = None
+    currentTimezone: str | None = None
+    currentTimeEpochMs: int | None = None
+    prompt: str | None = None
 
 
 class AiAnalyzeResponse(BaseModel):
@@ -62,3 +66,14 @@ class AiAnalyzeResponse(BaseModel):
     todoItems: list[str] = Field(default_factory=list)
     extractedEntities: list[ExtractedEntityResponse] = Field(default_factory=list)
     reminderCandidates: list[ReminderCandidateResponse] = Field(default_factory=list)
+
+    def is_effectively_empty(self) -> bool:
+        return (
+            not self.summary.strip()
+            and not (self.suggestedTitle or "").strip()
+            and not (self.suggestedCategory or "").strip()
+            and not (self.suggestedPriority or "").strip()
+            and not self.todoItems
+            and not self.extractedEntities
+            and not self.reminderCandidates
+        )

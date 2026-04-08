@@ -18,11 +18,14 @@ import com.ydoc.app.ui.theme.YDocTheme
 
 class MainActivity : ComponentActivity() {
     private val noteLaunchRequest = mutableStateOf<String?>(null)
+    private val quickRecordRequestToken = mutableStateOf<Long?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         noteLaunchRequest.value = intent?.getStringExtra(EXTRA_NOTE_ID)
-        val quickRecordRequested = intent?.action == ACTION_QUICK_RECORD
+        if (intent?.action == ACTION_QUICK_RECORD) {
+            quickRecordRequestToken.value = System.currentTimeMillis()
+        }
         enableEdgeToEdge()
         setContent {
             val container = remember { application.appContainer }
@@ -41,7 +44,8 @@ class MainActivity : ComponentActivity() {
                         val intent = Intent(this, OverlayHandleService::class.java)
                         if (enabled) startService(intent) else stopService(intent)
                     },
-                    quickRecordRequested = quickRecordRequested,
+                    quickRecordRequestToken = quickRecordRequestToken.value,
+                    onQuickRecordRequestConsumed = { quickRecordRequestToken.value = null },
                     launchNoteId = noteLaunchRequest.value,
                     onLaunchNoteConsumed = { noteLaunchRequest.value = null },
                     onRequestRecordingPermissions = {
@@ -62,6 +66,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         noteLaunchRequest.value = intent.getStringExtra(EXTRA_NOTE_ID)
+        if (intent.action == ACTION_QUICK_RECORD) {
+            quickRecordRequestToken.value = System.currentTimeMillis()
+        }
     }
 
     companion object {
