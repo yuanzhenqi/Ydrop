@@ -1,15 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useEffect, useState, Suspense } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { fetchNote, updateNote, fetchSuggestions, triggerAiAnalysis, archiveNote, trashNote } from '@/lib/api'
 import { CATEGORIES, PRIORITIES, CATEGORY_LABELS, PRIORITY_LABELS, COLOR_MAP } from '@/lib/constants'
 import { formatTime } from '@/lib/date'
 import type { Note, AiSuggestion, NoteCategory, NotePriority } from '@/lib/types'
 import { ArrowLeft, Save, Sparkles, Archive, Trash2 } from 'lucide-react'
 
-export default function NoteDetailPage() {
-  const { id } = useParams<{ id: string }>()
+function NoteDetailInner() {
+  const searchParams = useSearchParams()
+  const id = searchParams.get('id') || ''
   const router = useRouter()
   const [note, setNote] = useState<Note | null>(null)
   const [content, setContent] = useState('')
@@ -51,6 +52,7 @@ export default function NoteDetailPage() {
     setSuggestion(s)
   }
 
+  if (!id) return <div className="flex items-center justify-center h-full text-gray-400">缺少笔记 ID</div>
   if (!note) return <div className="flex items-center justify-center h-full text-gray-400">加载中...</div>
 
   const color = COLOR_MAP[note.color_token] || COLOR_MAP.SAGE
@@ -107,7 +109,6 @@ export default function NoteDetailPage() {
         </div>
       </div>
 
-      {/* AI Suggestion Panel */}
       {suggestion && suggestion.status === 'READY' && (
         <div className="bg-purple-50 rounded-2xl border border-purple-100 p-4 space-y-3">
           <h3 className="text-sm font-semibold text-purple-700">AI 建议</h3>
@@ -138,5 +139,13 @@ export default function NoteDetailPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function NoteDetailPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-400">加载中...</div>}>
+      <NoteDetailInner />
+    </Suspense>
   )
 }

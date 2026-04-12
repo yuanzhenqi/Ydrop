@@ -14,3 +14,12 @@ tmp/
 emu-*.xml
 emu-*.png
 nul
+
+# Web 端构建产物
+relay_service/.venv/
+relay_service/storage/
+relay_service/static/
+relay_service/web/.next/
+relay_service/web/out/
+relay_service/web/node_modules/
+relay_service/web/next-env.d.ts

@@ -50,7 +50,7 @@ export default function InboxPage() {
               key={note.id}
               note={note}
               section="inbox"
-              onEdit={(id) => router.push(`/note/${id}`)}
+              onEdit={(id) => router.push(`/note?id=${id}`)}
               onArchive={(id) => handleAction(() => archiveNote(id))}
               onTrash={(id) => handleAction(() => trashNote(id))}
               onCopy={(id) => {

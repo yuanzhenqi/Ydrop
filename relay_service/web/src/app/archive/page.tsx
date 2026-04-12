@@ -33,7 +33,7 @@ export default function ArchivePage() {
               key={note.id}
               note={note}
               section="archive"
-              onEdit={(id) => router.push(`/note/${id}`)}
+              onEdit={(id) => router.push(`/note?id=${id}`)}
               onUnarchive={(id) => handleAction(() => unarchiveNote(id))}
               onTrash={(id) => handleAction(() => trashNote(id))}
               onCopy={(id) => {
