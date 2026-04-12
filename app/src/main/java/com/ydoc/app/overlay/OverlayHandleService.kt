@@ -91,6 +91,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
     private lateinit var priorityBar: LinearLayout
     private lateinit var categoryButtons: Map<NoteCategory, TextView>
     private lateinit var priorityButtons: List<TextView>
+    private lateinit var stripEntryBar: LinearLayout
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private val stripAdapter = OverlayStripAdapter(this)
@@ -218,6 +219,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         recordingStatus = content.findViewById(R.id.overlayRecordingStatus)
         categoryBar = content.findViewById(R.id.overlayTagBar)
         priorityBar = content.findViewById(R.id.overlayPriorityBar)
+        stripEntryBar = content.findViewById(R.id.overlayStripEntryBar)
 
         categoryButtons = mapOf(
             NoteCategory.NOTE to content.findViewById(R.id.overlayCategoryNote),
@@ -236,7 +238,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         stripList.adapter = stripAdapter
         stripList.itemAnimator = null
         stripList.clipToPadding = false
-        stripList.setPadding(0, 0, 0, dpToPx(4))
+        stripList.setPadding(0, 0, 0, dpToPx(92))
         attachStripSwipeHelper()
 
         rootView.addView(content)
@@ -573,14 +575,17 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
 
     private fun refreshStripItems() {
         val showEntryHoldRecording = overlayState.isEntryHoldRecording()
+        val isStripExpanded = overlayState.surfaceState == OverlaySurfaceState.STRIP_EXPANDED
         val items = buildList {
-            add(
-                OverlayStripItem.ComposerEntryItem(
-                    category = overlayState.selectedCategory,
-                    priority = overlayState.selectedPriority,
-                    isRecording = showEntryHoldRecording,
-                ),
-            )
+            if (!isStripExpanded) {
+                add(
+                    OverlayStripItem.ComposerEntryItem(
+                        category = overlayState.selectedCategory,
+                        priority = overlayState.selectedPriority,
+                        isRecording = showEntryHoldRecording,
+                    ),
+                )
+            }
             activeNotes.forEach { note ->
                 if (note.id == overlayState.editingNoteId) {
                     add(
@@ -589,6 +594,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                             draft = overlayState.editingDraft,
                             category = overlayState.editingCategory,
                             priority = overlayState.editingPriority,
+                            tags = overlayState.editingTags,
                         ),
                     )
                 } else if (note.id == overlayState.expandedNoteId) {
@@ -599,10 +605,20 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             }
         }
         overlayState = overlayState.copy(stripItems = items)
-        if (showEntryHoldRecording) {
-            stripAdapter.updateComposerEntry(items.first() as OverlayStripItem.ComposerEntryItem, stripList)
+        if (showEntryHoldRecording && !isStripExpanded) {
+            stripAdapter.updateComposerEntry(
+                OverlayStripItem.ComposerEntryItem(
+                    category = overlayState.selectedCategory,
+                    priority = overlayState.selectedPriority,
+                    isRecording = true,
+                ),
+                stripList,
+            )
         } else {
             stripAdapter.submitItems(items)
+        }
+        if (isStripExpanded) {
+            renderStripEntryBar()
         }
     }
 
@@ -613,28 +629,49 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         )
         hideKeyboard()
         updateWindowFocusability(false)
+        refreshStripItems()
         render()
         animateStripIn()
     }
 
     private fun openTextComposer() {
-        overlayState = overlayState.copy(
-            surfaceState = OverlaySurfaceState.COMPOSER_ACTIVE,
-            composerMode = OverlayComposerMode.TEXT,
-            isRecording = false,
-            recordingOrigin = OverlayRecordingOrigin.NONE,
-            entryHoldActive = false,
-            expandedNoteId = null,
-        ).clearEditingState()
-        suppressImeCollapse = false
-        refreshStripItems()
-        render()
-        updateWindowFocusability(true)
-        draftInput.post {
-            draftInput.requestFocus()
-            val inputMethodManager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            inputMethodManager.showSoftInput(draftInput, InputMethodManager.SHOW_IMPLICIT)
-        }
+        // 先播放收起动画，再切换到 composer
+        val durationMs = 140L
+        railContainer.animate().cancel()
+        railContainer.animate()
+            .alpha(0f)
+            .scaleX(0.96f)
+            .scaleY(0.96f)
+            .setDuration(durationMs)
+            .withEndAction {
+                overlayState = overlayState.copy(
+                    surfaceState = OverlaySurfaceState.COMPOSER_ACTIVE,
+                    composerMode = OverlayComposerMode.TEXT,
+                    isRecording = false,
+                    recordingOrigin = OverlayRecordingOrigin.NONE,
+                    entryHoldActive = false,
+                    expandedNoteId = null,
+                ).clearEditingState()
+                suppressImeCollapse = false
+                refreshStripItems()
+                render()
+                updateWindowFocusability(true)
+                railContainer.alpha = 0f
+                railContainer.scaleX = 0.96f
+                railContainer.scaleY = 0.96f
+                railContainer.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(durationMs)
+                    .start()
+                draftInput.post {
+                    draftInput.requestFocus()
+                    val inputMethodManager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                    inputMethodManager.showSoftInput(draftInput, InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+            .start()
     }
 
     private fun openRecordingComposer() {
@@ -707,6 +744,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                 railContainer.visibility = View.GONE
                 stripList.visibility = View.GONE
                 composerPanel.visibility = View.GONE
+                stripEntryBar.visibility = View.GONE
                 handleView.visibility = View.VISIBLE
                 dismissLayer?.visibility = View.GONE
             }
@@ -714,20 +752,42 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                 railContainer.visibility = View.VISIBLE
                 stripList.visibility = View.VISIBLE
                 composerPanel.visibility = View.GONE
+                stripEntryBar.visibility = View.VISIBLE
                 handleView.visibility = View.VISIBLE
                 dismissLayer?.visibility = View.VISIBLE
                 updateStripHeight()
+                renderStripEntryBar()
             }
             OverlaySurfaceState.COMPOSER_ACTIVE -> {
                 railContainer.visibility = View.VISIBLE
                 stripList.visibility = View.GONE
                 composerPanel.visibility = View.VISIBLE
+                stripEntryBar.visibility = View.GONE
                 handleView.visibility = View.GONE
                 dismissLayer?.visibility = View.VISIBLE
             }
         }
 
         rootView.post { updateOverlayPosition() }
+    }
+
+    private fun renderStripEntryBar() {
+        val item = OverlayStripItem.ComposerEntryItem(
+            category = overlayState.selectedCategory,
+            priority = overlayState.selectedPriority,
+            isRecording = overlayState.isEntryHoldRecording(),
+        )
+        val existing = stripEntryBar.getChildAt(0) as? OverlayComposerPressView
+        if (existing != null) {
+            existing.bind(item, this)
+        } else {
+            stripEntryBar.removeAllViews()
+            stripEntryBar.addView(OverlayComposerPressView(this).also { it.bind(item, this) })
+        }
+        val currentWidth = (stripList.layoutParams as? RecyclerView.LayoutParams)?.width ?: railBaseWidthPx()
+        stripEntryBar.layoutParams = (stripEntryBar.layoutParams as? FrameLayout.LayoutParams)?.apply {
+            width = currentWidth
+        } ?: FrameLayout.LayoutParams(currentWidth, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
     }
 
     private fun renderComposerState() {
@@ -1059,6 +1119,10 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         overlayState = overlayState.copy(editingPriority = priority)
     }
 
+    override fun onEditingTagsChanged(tags: List<String>) {
+        overlayState = overlayState.copy(editingTags = tags)
+    }
+
     override fun onSaveEditing() {
         serviceScope.launch { saveInlineEditing() }
     }
@@ -1265,6 +1329,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             editingDraft = note.overlayEditingSeedText(),
             editingCategory = note.category,
             editingPriority = note.priority,
+            editingTags = note.tags,
             expandedNoteId = null,
         )
         refreshStripItems()
@@ -1298,6 +1363,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                     content = content,
                     category = overlayState.editingCategory,
                     priority = overlayState.editingPriority,
+                    tags = overlayState.editingTags,
                     colorToken = defaultColorFor(overlayState.editingCategory, overlayState.editingPriority),
                 ),
             )
@@ -1543,6 +1609,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             editingDraft = "",
             editingCategory = NoteCategory.NOTE,
             editingPriority = NotePriority.MEDIUM,
+            editingTags = emptyList(),
         )
 
     private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()

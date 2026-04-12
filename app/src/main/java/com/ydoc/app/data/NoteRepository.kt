@@ -26,6 +26,7 @@ class NoteRepository(
         content: String,
         category: NoteCategory,
         priority: NotePriority,
+        tags: List<String> = emptyList(),
     ): Note {
         val now = System.currentTimeMillis()
         val normalized = content.trim()
@@ -58,6 +59,7 @@ class NoteRepository(
             archivedAt = null,
             isTrashed = false,
             trashedAt = null,
+            tags = tags,
         )
         noteDao.upsert(note.toEntity())
         return note
@@ -244,6 +246,7 @@ class NoteRepository(
                 remotePath = note.remotePath,
                 lastPulledAt = System.currentTimeMillis(),
                 relayUrl = note.relayUrl ?: existing.relayUrl,
+                tags = note.tags.ifEmpty { existing.tags },
                 isArchived = note.isArchived,
                 archivedAt = note.archivedAt,
                 isTrashed = false,

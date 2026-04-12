@@ -465,6 +465,15 @@ class RelayAiClient(
             appendLine("Current system time: ${request.currentTimeText}")
             appendLine("Current system timezone: ${request.currentTimezone}")
             appendLine("Current system Unix milliseconds: ${request.currentTimeEpochMs}")
+            appendLine()
+            appendLine("TIME RESOLUTION RULES:")
+            appendLine("- For reminderCandidates, you MUST provide a \"scheduledAtIso\" field with the resolved future time in ISO 8601 format: \"YYYY-MM-DDTHH:mm\".")
+            appendLine("- Example: if currentTimeEpochMs corresponds to 2024-04-11 14:30 in the user's timezone and user says \"明天上午7:30\", scheduledAtIso should be \"2024-04-12T07:30\".")
+            appendLine("- Common Chinese relative expressions: 明天=+1 day, 后天=+2 days, 大后天=+3 days, 下周一=next Monday, 下个月=next month.")
+            appendLine("- Common time expressions: 上午7:30=07:30, 下午3点=15:00, 晚上8点=20:00, 凌晨2点=02:00, 中午12点=12:00, 半夜=00:00.")
+            appendLine("- If only a time-of-day is given without a date qualifier, assume today if that time is still in the future, otherwise tomorrow.")
+            appendLine("- If the time expression is too ambiguous to resolve confidently, do NOT create a reminderCandidate.")
+            appendLine("- Also provide scheduledAt as epoch milliseconds (best effort); the app will prefer scheduledAtIso if present.")
             appendLine("Resolve all relative dates and times against this context.")
             appendLine()
             append(basePrompt)
@@ -517,9 +526,10 @@ class RelayAiClient(
             suggestedCategory must be NOTE, TODO, TASK, or REMINDER.
             suggestedPriority must be LOW, MEDIUM, HIGH, or URGENT.
             extractedEntities items must be objects with keys label and value.
-            reminderCandidates items must be objects with keys title, scheduledAt, and reason.
-            reminderCandidates[].scheduledAt must be unix milliseconds.
-            Valid example JSON object: {"summary":"The user wants a reminder for tomorrow at 9 AM to submit the weekly report.","suggestedTitle":"Submit weekly report","suggestedCategory":"REMINDER","suggestedPriority":"HIGH","todoItems":["Submit weekly report"],"extractedEntities":[{"label":"time","value":"tomorrow 9 AM"},{"label":"task","value":"weekly report"}],"reminderCandidates":[{"title":"Submit weekly report","scheduledAt":1736384400000,"reason":"The user explicitly asked to be reminded tomorrow at 9 AM."}]}
+            reminderCandidates items must be objects with keys title, scheduledAt, reason, and scheduledAtIso.
+            reminderCandidates[].scheduledAt must be unix milliseconds (best effort).
+            reminderCandidates[].scheduledAtIso must be an ISO 8601 datetime string in the user's timezone: "YYYY-MM-DDTHH:mm".
+            Valid example JSON object: {"summary":"The user wants a reminder for tomorrow at 9 AM to submit the weekly report.","suggestedTitle":"Submit weekly report","suggestedCategory":"REMINDER","suggestedPriority":"HIGH","todoItems":["Submit weekly report"],"extractedEntities":[{"label":"time","value":"tomorrow 9 AM"},{"label":"task","value":"weekly report"}],"reminderCandidates":[{"title":"Submit weekly report","scheduledAt":1736384400000,"scheduledAtIso":"2024-09-09T09:00","reason":"The user explicitly asked to be reminded tomorrow at 9 AM."}]}
             """
                 .trimIndent()
                 .replace('\n', ' ')

@@ -30,6 +30,17 @@
             app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
 
         <LinearLayout
+            android:id="@+id/overlayStripEntryBar"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:elevation="12dp"
+            android:clipChildren="false"
+            android:clipToPadding="false" />
+
+        <LinearLayout
             android:id="@+id/overlayComposerPanel"
             android:layout_width="260dp"
             android:layout_height="wrap_content"

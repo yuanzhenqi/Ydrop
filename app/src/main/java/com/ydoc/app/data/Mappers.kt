@@ -61,6 +61,7 @@ fun NoteEntity.toModel(): Note =
         archivedAt = archivedAt,
         isTrashed = isTrashed,
         trashedAt = trashedAt,
+        tags = tagsJson?.let { json.decodeFromString(ListSerializer(String.serializer()), it) } ?: emptyList(),
     )
 
 fun Note.toEntity(): NoteEntity =
@@ -96,6 +97,7 @@ fun Note.toEntity(): NoteEntity =
         archivedAt = archivedAt,
         isTrashed = isTrashed,
         trashedAt = trashedAt,
+        tagsJson = if (tags.isEmpty()) null else json.encodeToString(ListSerializer(String.serializer()), tags),
     )
 
 fun SyncTargetEntity.toModelOrNull(): SyncTarget? {

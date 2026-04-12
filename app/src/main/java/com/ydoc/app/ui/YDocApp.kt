@@ -3,7 +3,9 @@ package com.ydoc.app.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -39,6 +42,8 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -65,6 +70,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
@@ -78,6 +85,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ydoc.app.R
 import com.ydoc.app.data.AppContainer
 import com.ydoc.app.model.AiSuggestion
+import com.ydoc.app.model.AiSuggestionStatus
 import com.ydoc.app.model.AiEndpointMode
 import com.ydoc.app.model.AudioPlaybackUiState
 import com.ydoc.app.model.Note
@@ -180,6 +188,7 @@ fun YDocApp(
         onDraftChange = viewModel::updateDraftContent,
         onDraftCategoryChange = viewModel::updateDraftCategory,
         onDraftPriorityChange = viewModel::updateDraftPriority,
+        onDraftTagsChange = viewModel::updateDraftTags,
         onToggleCaptureExpanded = viewModel::toggleCaptureExpanded,
         onSave = viewModel::saveDraft,
         onSync = viewModel::syncNow,
@@ -228,16 +237,23 @@ fun YDocApp(
         onDismissAi = viewModel::dismissAiSuggestion,
         onCreateReminderFromSuggestion = viewModel::createReminderFromSuggestion,
         onAddQuickReminder = viewModel::addQuickReminder,
+        onCopyNote = viewModel::copyNoteContent,
         onCancelReminder = viewModel::cancelReminder,
         onExportReminderToAlarm = viewModel::exportReminderToAlarm,
+        onCreateReminderForDate = viewModel::createReminderForDate,
         canPlayAudio = container.localAudioPlayer::canPlay,
         onToggleAudioPlayback = viewModel::toggleAudioPlayback,
         onSeekAudio = viewModel::seekAudio,
         onUpdateEditingContent = viewModel::updateEditingContent,
         onUpdateEditingCategory = viewModel::updateEditingCategory,
         onUpdateEditingPriority = viewModel::updateEditingPriority,
+        onUpdateEditingTags = viewModel::updateEditingTags,
         onSaveEditedNote = viewModel::saveEditedNote,
         onCancelEditing = viewModel::cancelEditing,
+        onSearchQueryChange = viewModel::updateSearchQuery,
+        onClearSearch = viewModel::clearSearch,
+        onToggleTagFilter = viewModel::toggleTagFilter,
+        onClearTagFilter = viewModel::clearTagFilter,
     )
 }
 
@@ -252,6 +268,7 @@ private fun YDocScreen(
     onDraftChange: (String) -> Unit,
     onDraftCategoryChange: (NoteCategory) -> Unit,
     onDraftPriorityChange: (NotePriority) -> Unit,
+    onDraftTagsChange: (List<String>) -> Unit,
     onToggleCaptureExpanded: () -> Unit,
     onSave: () -> Unit,
     onSync: () -> Unit,
@@ -300,26 +317,49 @@ private fun YDocScreen(
     onDismissAi: (String) -> Unit,
     onCreateReminderFromSuggestion: (String, ReminderCandidate) -> Unit,
     onAddQuickReminder: (String, Long) -> Unit,
+    onCopyNote: (String) -> Unit,
     onCancelReminder: (String) -> Unit,
     onExportReminderToAlarm: (String) -> Unit,
+    onCreateReminderForDate: (Long, String, Int, Int) -> Unit,
     canPlayAudio: (Note) -> Boolean,
     onToggleAudioPlayback: (String) -> Unit,
     onSeekAudio: (Long) -> Unit,
     onUpdateEditingContent: (String) -> Unit,
     onUpdateEditingCategory: (NoteCategory) -> Unit,
     onUpdateEditingPriority: (NotePriority) -> Unit,
+    onUpdateEditingTags: (List<String>) -> Unit,
     onSaveEditedNote: () -> Unit,
     onCancelEditing: () -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onClearSearch: () -> Unit,
+    onToggleTagFilter: (String) -> Unit,
+    onClearTagFilter: () -> Unit,
 ) {
-    val currentNotes = when (state.currentSection) {
+    val baseNotes = when (state.currentSection) {
         NoteListSection.INBOX -> state.notes
         NoteListSection.CALENDAR -> emptyList()
         NoteListSection.ARCHIVE -> state.archivedNotes
         NoteListSection.TRASH -> state.trashedNotes
     }
+    val currentNotes = remember(baseNotes, state.tagFilter, state.searchQuery) {
+        var filtered = baseNotes
+        if (state.tagFilter.isNotEmpty()) {
+            filtered = filtered.filter { note -> note.tags.any { it in state.tagFilter } }
+        }
+        if (state.searchQuery.isNotBlank()) {
+            val q = state.searchQuery.trim()
+            filtered = filtered.filter { note ->
+                note.title.contains(q, ignoreCase = true) ||
+                    note.content.contains(q, ignoreCase = true) ||
+                    note.tags.any { it.contains(q, ignoreCase = true) }
+            }
+        }
+        filtered
+    }
     val upcomingReminders = state.reminders
         .filter { it.status == ReminderStatus.SCHEDULED }
         .sortedBy { it.scheduledAt }
+    var searchMode by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     LaunchedEffect(state.editingNote?.noteId) {
         if (state.editingNote != null) {
@@ -329,29 +369,60 @@ private fun YDocScreen(
 
     Scaffold(
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text(if (showSettings) "设置" else "Ydrop") },
-                actions = {
-                    IconButton(onClick = { if (showSettings) onCloseSettings() else onOpenSettings() }) {
-                        Icon(Icons.Rounded.Settings, contentDescription = "设置")
-                    }
-                },
-            )
+            if (searchMode && !showSettings) {
+                OutlinedTextField(
+                    value = state.searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("搜索标题、内容或标签") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (state.searchQuery.isNotEmpty()) {
+                            IconButton(onClick = onClearSearch) {
+                                Icon(Icons.Rounded.Close, contentDescription = "清除")
+                            }
+                        }
+                        IconButton(onClick = { searchMode = false; onClearSearch() }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "关闭搜索")
+                        }
+                    },
+                )
+            } else {
+                CenterAlignedTopAppBar(
+                    title = { Text(if (showSettings) "设置" else "Ydrop") },
+                    actions = {
+                        if (!showSettings) {
+                            IconButton(onClick = { searchMode = true }) {
+                                Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                            }
+                        }
+                        IconButton(onClick = { if (showSettings) onCloseSettings() else onOpenSettings() }) {
+                            Icon(Icons.Rounded.Settings, contentDescription = "设置")
+                        }
+                    },
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { innerPadding ->
-        LazyColumn(
-            state = listState,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
                 .padding(innerPadding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (showSettings) {
-                item {
-                    SettingsCardTabbed(
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 100.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (showSettings) {
+                    item {
+                        SettingsCardTabbed(
                         settings = state.settings,
                         onWebDavChange = onWebDavChange,
                         onToggleWebDav = onToggleWebDav,
@@ -384,32 +455,15 @@ private fun YDocScreen(
                     )
                 }
             } else {
-                item {
-                    HeroCaptureCard(
-                        draft = state.draft,
-                        captureExpanded = state.captureExpanded,
-                        isSaving = state.isSaving,
-                        isSyncing = state.isSyncing,
-                        syncHint = state.syncHint,
-                        recording = state.recording,
-                        onDraftChange = onDraftChange,
-                        onDraftCategoryChange = onDraftCategoryChange,
-                        onDraftPriorityChange = onDraftPriorityChange,
-                        onToggleExpanded = onToggleCaptureExpanded,
-                        onSave = onSave,
-                        onSync = onSync,
-                        onStartRecording = onStartRecording,
-                        onStopRecording = onStopRecording,
-                        onCancelRecording = onCancelRecording,
-                    )
-                }
                 state.editingNote?.let { editing ->
                     item {
                         EditNoteCard(
                             editing = editing,
+                            suggestedTags = state.suggestedTags,
                             onUpdateContent = onUpdateEditingContent,
                             onUpdateCategory = onUpdateEditingCategory,
                             onUpdatePriority = onUpdateEditingPriority,
+                            onUpdateTags = onUpdateEditingTags,
                             onSave = onSaveEditedNote,
                             onCancel = onCancelEditing,
                         )
@@ -421,6 +475,17 @@ private fun YDocScreen(
                         onShowSection = onShowSection,
                         onEmptyTrash = onEmptyTrash,
                     )
+                }
+                // Tag filter bar
+                if (state.suggestedTags.isNotEmpty() && state.tagFilter.isNotEmpty() || state.suggestedTags.isNotEmpty()) {
+                    item {
+                        TagFilterBar(
+                            suggestedTags = state.suggestedTags,
+                            tagFilter = state.tagFilter,
+                            onToggleTag = onToggleTagFilter,
+                            onClearFilter = onClearTagFilter,
+                        )
+                    }
                 }
                 if (state.currentSection == NoteListSection.INBOX) {
                     item {
@@ -435,6 +500,7 @@ private fun YDocScreen(
                             onCancelReminder = onCancelReminder,
                             onExportToAlarm = onExportReminderToAlarm,
                             onOpenCalendar = { onShowSection(NoteListSection.CALENDAR) },
+                            onCreateReminderForDate = onCreateReminderForDate,
                         )
                     }
                 }
@@ -450,6 +516,7 @@ private fun YDocScreen(
                             onRestoreNote = onRestoreNote,
                             onCancelReminder = onCancelReminder,
                             onExportToAlarm = onExportReminderToAlarm,
+                            onCreateReminderForDate = onCreateReminderForDate,
                         )
                     }
                 } else if (currentNotes.isEmpty()) {
@@ -476,25 +543,56 @@ private fun YDocScreen(
                             onDismissAi = { onDismissAi(note.id) },
                             onCreateReminderFromSuggestion = { candidate -> onCreateReminderFromSuggestion(note.id, candidate) },
                             onAddQuickReminder = onAddQuickReminder,
+                            onCopy = { onCopyNote(note.id) },
                         )
                     }
                 }
+            }
+            }
+            if (!showSettings) {
+                HeroCaptureCard(
+                    draft = state.draft,
+                    captureExpanded = state.captureExpanded,
+                    isSaving = state.isSaving,
+                    isSyncing = state.isSyncing,
+                    syncHint = state.syncHint,
+                    recording = state.recording,
+                    suggestedTags = state.suggestedTags,
+                    onDraftChange = onDraftChange,
+                    onDraftCategoryChange = onDraftCategoryChange,
+                    onDraftPriorityChange = onDraftPriorityChange,
+                    onDraftTagsChange = onDraftTagsChange,
+                    onToggleExpanded = onToggleCaptureExpanded,
+                    onSave = onSave,
+                    onSync = onSync,
+                    onStartRecording = onStartRecording,
+                    onStopRecording = onStopRecording,
+                    onCancelRecording = onCancelRecording,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .fillMaxWidth(),
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HeroCaptureCard(
+    modifier: Modifier = Modifier,
     draft: CaptureDraft,
     captureExpanded: Boolean,
     isSaving: Boolean,
     isSyncing: Boolean,
     syncHint: String,
     recording: RecordingUiState,
+    suggestedTags: List<String>,
     onDraftChange: (String) -> Unit,
     onDraftCategoryChange: (NoteCategory) -> Unit,
     onDraftPriorityChange: (NotePriority) -> Unit,
+    onDraftTagsChange: (List<String>) -> Unit,
     onToggleExpanded: () -> Unit,
     onSave: () -> Unit,
     onSync: () -> Unit,
@@ -505,6 +603,7 @@ private fun HeroCaptureCard(
     val effectiveExpanded = captureExpanded || draft.content.isNotBlank() || recording.state != RecordingState.IDLE
     val previewText = draft.content.ifBlank { "记点什么…" }
     Card(
+        modifier = modifier,
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -512,7 +611,7 @@ private fun HeroCaptureCard(
         Column(
             modifier = Modifier
                 .padding(horizontal = 18.dp, vertical = 16.dp)
-                .animateContentSize(),
+                .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
@@ -586,7 +685,11 @@ private fun HeroCaptureCard(
                 )
             }
 
-            AnimatedVisibility(visible = effectiveExpanded) {
+            AnimatedVisibility(
+                visible = effectiveExpanded,
+                enter = expandVertically(animationSpec = tween(150, easing = FastOutSlowInEasing)) + fadeIn(tween(100)),
+                exit = shrinkVertically(animationSpec = tween(150, easing = FastOutSlowInEasing)) + fadeOut(tween(80)),
+            ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (recording.state != RecordingState.IDLE) {
                         RecordingStrip(recording, onStartRecording, onStopRecording, onCancelRecording)
@@ -614,6 +717,35 @@ private fun HeroCaptureCard(
                         onSelect = onDraftPriorityChange,
                         label = { it.toChinese() },
                     )
+                    var tagInput by remember(draft.tags) { mutableStateOf(draft.tags.joinToString(", ")) }
+                    Text("标签", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(
+                        value = tagInput,
+                        onValueChange = { value ->
+                            tagInput = value
+                            onDraftTagsChange(value.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("逗号分隔，如：工作, 日程, 重要") },
+                    )
+                    // Tag suggestion chips
+                    val availableSuggestions = suggestedTags.filter { it !in draft.tags }
+                    if (availableSuggestions.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            availableSuggestions.take(6).forEach { tag ->
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        val newTags = draft.tags + tag
+                                        tagInput = newTags.joinToString(", ")
+                                        onDraftTagsChange(newTags)
+                                    },
+                                    label = { Text("#$tag", style = MaterialTheme.typography.labelSmall) },
+                                )
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -643,15 +775,19 @@ private fun HeroCaptureCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditNoteCard(
     editing: EditDraft,
+    suggestedTags: List<String>,
     onUpdateContent: (String) -> Unit,
     onUpdateCategory: (NoteCategory) -> Unit,
     onUpdatePriority: (NotePriority) -> Unit,
+    onUpdateTags: (List<String>) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    var tagInput by remember(editing.noteId) { mutableStateOf(editing.tags.joinToString(", ")) }
     Card(
         shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -674,6 +810,33 @@ private fun EditNoteCard(
                 onSelect = onUpdatePriority,
                 label = { it.toChinese() },
             )
+            Text("标签", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedTextField(
+                value = tagInput,
+                onValueChange = { value ->
+                    tagInput = value
+                    onUpdateTags(value.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("逗号分隔，如：工作, 日程, 重要") },
+            )
+            val editSuggestions = suggestedTags.filter { it !in editing.tags }
+            if (editSuggestions.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    editSuggestions.take(6).forEach { tag ->
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                val newTags = editing.tags + tag
+                                tagInput = newTags.joinToString(", ")
+                                onUpdateTags(newTags)
+                            },
+                            label = { Text("#$tag", style = MaterialTheme.typography.labelSmall) },
+                        )
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onSave) { Text("保存修改") }
                 AssistChip(onClick = onCancel, label = { Text("取消") })
@@ -1216,6 +1379,7 @@ private fun ReminderCalendarPreviewCardV2(
     onCancelReminder: (String) -> Unit,
     onExportToAlarm: (String) -> Unit,
     onOpenCalendar: () -> Unit,
+    onCreateReminderForDate: (Long, String, Int, Int) -> Unit,
 ) {
     val monthStartMillis = remember { startOfMonth(System.currentTimeMillis()) }
     val todayStartMillis = remember { startOfDay(System.currentTimeMillis()) }
@@ -1310,6 +1474,7 @@ private fun ReminderCalendarPreviewCardV2(
                         ReminderDayAgendaList(
                             reminders = selectedDayReminders,
                             notes = notes,
+                            selectedDayMillis = selectedDayStartMillis,
                             onOpenNote = onOpenNote,
                             onArchiveNote = onArchiveNote,
                             onUnarchiveNote = onUnarchiveNote,
@@ -1317,6 +1482,7 @@ private fun ReminderCalendarPreviewCardV2(
                             onRestoreNote = onRestoreNote,
                             onCancelReminder = onCancelReminder,
                             onExportToAlarm = onExportToAlarm,
+                            onCreateReminderForDate = onCreateReminderForDate,
                         )
                     }
                 }
@@ -1343,6 +1509,7 @@ private fun ReminderCalendarSection(
     onRestoreNote: (String) -> Unit,
     onCancelReminder: (String) -> Unit,
     onExportToAlarm: (String) -> Unit,
+    onCreateReminderForDate: (Long, String, Int, Int) -> Unit,
 ) {
     val scheduledReminders = remember(reminders) {
         reminders.filter { it.status == ReminderStatus.SCHEDULED }.sortedBy { it.scheduledAt }
@@ -1463,6 +1630,7 @@ private fun ReminderCalendarSection(
                 ReminderDayAgendaList(
                     reminders = selectedDayReminders,
                     notes = notes,
+                    selectedDayMillis = selectedDayStartMillis,
                     onOpenNote = onOpenNote,
                     onArchiveNote = onArchiveNote,
                     onUnarchiveNote = onUnarchiveNote,
@@ -1470,6 +1638,7 @@ private fun ReminderCalendarSection(
                     onRestoreNote = onRestoreNote,
                     onCancelReminder = onCancelReminder,
                     onExportToAlarm = onExportToAlarm,
+                    onCreateReminderForDate = onCreateReminderForDate,
                 )
             }
         }
@@ -1563,6 +1732,7 @@ private fun ReminderMonthGrid(
 private fun ReminderDayAgendaList(
     reminders: List<ReminderEntry>,
     notes: List<Note>,
+    selectedDayMillis: Long,
     onOpenNote: (Note) -> Unit,
     onArchiveNote: (String) -> Unit,
     onUnarchiveNote: (String) -> Unit,
@@ -1570,7 +1740,19 @@ private fun ReminderDayAgendaList(
     onRestoreNote: (String) -> Unit,
     onCancelReminder: (String) -> Unit,
     onExportToAlarm: (String) -> Unit,
+    onCreateReminderForDate: (Long, String, Int, Int) -> Unit,
 ) {
+    var showCreateDialog by remember { mutableStateOf(false) }
+    if (showCreateDialog) {
+        CreateReminderDialog(
+            dayMillis = selectedDayMillis,
+            onConfirm = { title, hour, minute ->
+                onCreateReminderForDate(selectedDayMillis, title, hour, minute)
+                showCreateDialog = false
+            },
+            onDismiss = { showCreateDialog = false },
+        )
+    }
     val notesById = remember(notes) { notes.associateBy { it.id } }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         reminders.forEach { reminder ->
@@ -1734,7 +1916,71 @@ private fun ReminderDayAgendaList(
                 }
             }
         }
+        FilledTonalButton(
+            onClick = { showCreateDialog = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("新增日程")
+        }
     }
+}
+
+@Composable
+private fun CreateReminderDialog(
+    dayMillis: Long,
+    onConfirm: (String, Int, Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var title by remember { mutableStateOf("") }
+    var hour by remember { mutableStateOf("09") }
+    var minute by remember { mutableStateOf("00") }
+    val dateLabel = remember(dayMillis) {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            .format(java.util.Date(dayMillis))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新增日程 ($dateLabel)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("日程标题") },
+                    singleLine = true,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = hour,
+                        onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) hour = v },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("时") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = minute,
+                        onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) minute = v },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("分") },
+                        singleLine = true,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val h = hour.toIntOrNull()?.coerceIn(0, 23) ?: 9
+                    val m = minute.toIntOrNull()?.coerceIn(0, 59) ?: 0
+                    onConfirm(title.ifBlank { "日程提醒" }, h, m)
+                },
+            ) { Text("创建") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 @Composable
@@ -1806,6 +2052,35 @@ private fun EmptyStateCardV2(section: NoteListSection) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TagFilterBar(
+    suggestedTags: List<String>,
+    tagFilter: Set<String>,
+    onToggleTag: (String) -> Unit,
+    onClearFilter: () -> Unit,
+) {
+    if (suggestedTags.isEmpty()) return
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        suggestedTags.forEach { tag ->
+            FilterChip(
+                selected = tag in tagFilter,
+                onClick = { onToggleTag(tag) },
+                label = { Text("#$tag", style = MaterialTheme.typography.labelSmall) },
+            )
+        }
+        if (tagFilter.isNotEmpty()) {
+            TextButton(onClick = onClearFilter) {
+                Text("清除筛选", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NoteCardV2(
     note: Note,
@@ -1827,13 +2102,16 @@ private fun NoteCardV2(
     onDismissAi: () -> Unit,
     onCreateReminderFromSuggestion: (ReminderCandidate) -> Unit,
     onAddQuickReminder: (String, Long) -> Unit,
+    onCopy: () -> Unit,
 ) {
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
-    var isOverflowing by remember(note.id) { mutableStateOf(false) }
+    var showOriginalContent by remember(note.id, note.originalContent) { mutableStateOf(false) }
     var reminderMenuExpanded by remember(note.id) { mutableStateOf(false) }
+    var actionOverflowExpanded by remember(note.id) { mutableStateOf(false) }
     val isVoiceNote = note.source == NoteSource.VOICE
-    val isPlayingThisNote = audioPlayback.currentNoteId == note.id && (audioPlayback.isPlaying || audioPlayback.isBuffering || audioPlayback.positionMs > 0)
+    val isPlayingThisNote = audioPlayback.currentNoteId == note.id &&
+        (audioPlayback.isPlaying || audioPlayback.isBuffering || audioPlayback.positionMs > 0)
     val displayTitle = note.displayTitleForMainCard()
     val bodyText = when {
         note.source == NoteSource.VOICE && note.transcript?.isNotBlank() == true && note.content != note.transcript -> note.content
@@ -1843,213 +2121,242 @@ private fun NoteCardV2(
     val originalContent = note.originalContent
         ?.trim()
         ?.takeIf { it.isNotBlank() && it != bodyText.trim() }
-    var showOriginalContent by remember(note.id, originalContent) { mutableStateOf(false) }
+    val aiStatusDotColor = when (suggestion?.status) {
+        AiSuggestionStatus.RUNNING -> MaterialTheme.colorScheme.tertiary
+        AiSuggestionStatus.READY -> MaterialTheme.colorScheme.primary
+        AiSuggestionStatus.FAILED -> MaterialTheme.colorScheme.error
+        AiSuggestionStatus.APPLIED -> MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+        else -> null
+    }
+
     Card(
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.clickable { expanded = !expanded },
     ) {
         Column(
             modifier = Modifier
-                .padding(18.dp)
-                .animateContentSize(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(modifier = Modifier.size(12.dp).background(accent, RoundedCornerShape(999.dp)))
-                Text(displayTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            }
-            Text(
-                bodyText,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (expanded) Int.MAX_VALUE else 6,
-                overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                onTextLayout = { result ->
-                    if (!expanded) {
-                        isOverflowing = result.hasVisualOverflow
-                    }
-                },
-            )
-            if (isOverflowing || expanded) {
-                AssistChip(
-                    onClick = { expanded = !expanded },
-                    label = { Text(if (expanded) "收起" else "展开全文") },
+            // ── Row 1: Title + AI dot + timestamp ──
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(modifier = Modifier.size(10.dp).background(accent, RoundedCornerShape(999.dp)))
+                Text(
+                    displayTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            originalContent?.let { hiddenContent ->
-                AssistChip(
-                    onClick = { showOriginalContent = !showOriginalContent },
-                    label = { Text(if (showOriginalContent) "隐藏原内容" else "查看原内容") },
-                )
-                AnimatedVisibility(
-                    visible = showOriginalContent,
-                    enter = fadeIn() + expandVertically(),
-                    exit = fadeOut() + shrinkVertically(),
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = accent.copy(alpha = 0.08f),
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = "原内容",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = accent,
-                            )
-                            Text(
-                                text = hiddenContent,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-            HorizontalDivider()
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                StatusPill(label = note.category.toChinese(), color = accent.copy(alpha = 0.18f))
-                StatusPill(label = note.priority.toChinese(), color = MaterialTheme.colorScheme.secondaryContainer)
-                StatusPill(label = note.status.name, color = MaterialTheme.colorScheme.tertiaryContainer)
-                AssistChip(
-                    onClick = onRunAi,
-                    label = {
-                        Text(
-                            when (suggestion?.status?.name) {
-                                "RUNNING" -> "整理中"
-                                "READY" -> "有建议"
-                                "FAILED" -> "整理失败"
-                                "APPLIED" -> "已应用"
-                                else -> "AI 整理"
-                            },
-                        )
-                    },
-                )
-                if (isVoiceNote) StatusPill(label = "语音", color = MaterialTheme.colorScheme.primaryContainer)
-            }
-            if (suggestion != null && suggestion.shouldShowPanel()) {
-                AiSuggestionPanel(
-                    suggestion = suggestion,
-                    onApplyAi = onApplyAi,
-                    onDismissAi = onDismissAi,
-                    onRunAi = onRunAi,
-                    onCreateReminderFromSuggestion = onCreateReminderFromSuggestion,
-                )
-            }
-            note.transcriptionStatus.takeIf { it.name != "NOT_STARTED" }?.let {
-                val statusLabel = when (it.name) {
-                    "UPLOADING" -> "上传中"
-                    "TRANSCRIBING" -> "转写中"
-                    "DONE" -> "转写成功"
-                    "FAILED" -> "转写失败"
-                    else -> "未开始"
+                aiStatusDotColor?.let { dotColor ->
+                    Box(modifier = Modifier.size(6.dp).background(dotColor, RoundedCornerShape(999.dp)))
                 }
                 Text(
-                    text = buildString {
-                        append("转写状态：$statusLabel")
-                        note.transcriptionUpdatedAt?.let { ts -> append(" | ${formatTime(ts)}") }
-                        note.transcriptionError?.takeIf { err -> err.isNotBlank() }?.let { err -> append(" | $err") }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (it.name == "FAILED") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    formatTime(note.createdAt),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            // ── Row 2: Content preview (collapsed=2 lines) ──
             Text(
-                text = "创建于 ${formatTime(note.createdAt)}" + (note.lastSyncedAt?.let { "  |  同步时间 ${formatTime(it)}" } ?: ""),
+                bodyText,
                 style = MaterialTheme.typography.bodySmall,
+                maxLines = if (expanded) Int.MAX_VALUE else 2,
+                overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (isVoiceNote && isPlayingThisNote) {
-                AudioPlaybackBar(
-                    playback = audioPlayback,
-                    accent = accent,
-                    onSeekAudio = onSeekAudio,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (isVoiceNote) {
-                    CompactActionIcon(
-                        icon = painterResource(
-                            id = if (audioPlayback.currentNoteId == note.id && audioPlayback.isPlaying) {
-                                android.R.drawable.ic_media_pause
-                            } else {
-                                android.R.drawable.ic_media_play
-                            },
-                        ),
-                        contentDescription = if (audioPlayback.currentNoteId == note.id && audioPlayback.isPlaying) "暂停录音" else "播放录音",
-                        enabled = canPlayAudio,
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        onClick = onToggleAudioPlayback,
-                    )
+
+            // ── Row 3: Meta pills ──
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StatusPill(label = note.category.toChinese(), color = accent.copy(alpha = 0.18f))
+                StatusPill(label = note.priority.toChinese(), color = MaterialTheme.colorScheme.secondaryContainer)
+                if (isVoiceNote) StatusPill(label = "语音", color = MaterialTheme.colorScheme.primaryContainer)
+                if (note.tags.isNotEmpty()) {
+                    note.tags.take(2).forEach { tag ->
+                        StatusPill(label = "#$tag", color = MaterialTheme.colorScheme.surfaceVariant)
+                    }
+                    if (note.tags.size > 2) {
+                        Text("+${note.tags.size - 2}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                if (section != NoteListSection.TRASH) {
-                    Box {
-                        CompactActionIcon(
-                            icon = painterResource(id = android.R.drawable.ic_menu_my_calendar),
-                            contentDescription = "添加提醒",
-                            onClick = { reminderMenuExpanded = true },
-                        )
-                        DropdownMenu(expanded = reminderMenuExpanded, onDismissRequest = { reminderMenuExpanded = false }) {
-                            reminderPresets().forEach { (label, atMillis) ->
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = {
-                                        onAddQuickReminder(note.id, atMillis)
-                                        reminderMenuExpanded = false
-                                    },
-                                )
+            }
+
+            // ── Expanded detail ──
+            if (expanded) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                // Original content toggle
+                originalContent?.let { hiddenContent ->
+                    Text(
+                        if (showOriginalContent) "隐藏原内容" else "查看原内容",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { showOriginalContent = !showOriginalContent },
+                    )
+                    AnimatedVisibility(
+                        visible = showOriginalContent,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = accent.copy(alpha = 0.08f),
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text("原内容", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = accent)
+                                Text(hiddenContent, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
-                when (section) {
-                    NoteListSection.INBOX -> {
-                        CompactActionIcon(painterResource(id = android.R.drawable.ic_menu_edit), "编辑记录", onClick = onEdit)
-                        CompactActionIcon(painterResource(id = android.R.drawable.ic_menu_save), "归档记录", onClick = onArchive)
-                        CompactActionIcon(
-                            icon = painterResource(id = android.R.drawable.ic_menu_delete),
-                            contentDescription = "移入回收站",
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
-                            iconTint = MaterialTheme.colorScheme.onErrorContainer,
-                            onClick = onDelete,
-                        )
-                    }
-                    NoteListSection.CALENDAR -> Unit
-                    NoteListSection.ARCHIVE -> {
-                        CompactActionIcon(painterResource(id = android.R.drawable.ic_menu_edit), "编辑记录", onClick = onEdit)
-                        CompactActionIcon(painterResource(id = android.R.drawable.ic_menu_revert), "取消归档", onClick = onUnarchive)
-                        CompactActionIcon(
-                            icon = painterResource(id = android.R.drawable.ic_menu_delete),
-                            contentDescription = "移入回收站",
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
-                            iconTint = MaterialTheme.colorScheme.onErrorContainer,
-                            onClick = onDelete,
-                        )
-                    }
-                    NoteListSection.TRASH -> {
-                        CompactActionIcon(painterResource(id = android.R.drawable.ic_menu_revert), "恢复记录", onClick = onRestore)
-                        CompactActionIcon(
-                            icon = painterResource(id = android.R.drawable.ic_menu_close_clear_cancel),
-                            contentDescription = "彻底删除",
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            iconTint = MaterialTheme.colorScheme.onErrorContainer,
-                            onClick = onDeletePermanently,
-                        )
+
+                // Full tags
+                if (note.tags.size > 2) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        note.tags.forEach { tag ->
+                            StatusPill(label = "#$tag", color = MaterialTheme.colorScheme.surfaceVariant)
+                        }
                     }
                 }
-                if (section != NoteListSection.TRASH && (note.status.name == "FAILED" || note.status.name == "LOCAL_ONLY")) {
-                    CompactActionIcon(painterResource(id = android.R.drawable.stat_notify_sync), "重新同步", onClick = onRetrySync)
+
+                // AI panel
+                if (suggestion != null && suggestion.shouldShowPanel()) {
+                    AiSuggestionPanel(
+                        suggestion = suggestion,
+                        onApplyAi = onApplyAi,
+                        onDismissAi = onDismissAi,
+                        onRunAi = onRunAi,
+                        onCreateReminderFromSuggestion = onCreateReminderFromSuggestion,
+                    )
                 }
-            }
-            note.syncError?.takeIf { it.isNotBlank() }?.let {
-                Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+
+                // Transcription status
+                note.transcriptionStatus.takeIf { it.name != "NOT_STARTED" }?.let {
+                    val statusLabel = when (it.name) {
+                        "UPLOADING" -> "上传中"
+                        "TRANSCRIBING" -> "转写中"
+                        "DONE" -> "转写成功"
+                        "FAILED" -> "转写失败"
+                        else -> "未开始"
+                    }
+                    Text(
+                        buildString {
+                            append("转写：$statusLabel")
+                            note.transcriptionUpdatedAt?.let { ts -> append(" | ${formatTime(ts)}") }
+                            note.transcriptionError?.takeIf { err -> err.isNotBlank() }?.let { err -> append(" | $err") }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (it.name == "FAILED") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // Sync time
+                note.lastSyncedAt?.let {
+                    Text("同步于 ${formatTime(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                // Audio playback
+                if (isVoiceNote && isPlayingThisNote) {
+                    AudioPlaybackBar(playback = audioPlayback, accent = accent, onSeekAudio = onSeekAudio)
+                }
+
+                // Action row: play + reminder + overflow menu
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (isVoiceNote) {
+                        CompactActionIcon(
+                            icon = painterResource(
+                                id = if (audioPlayback.currentNoteId == note.id && audioPlayback.isPlaying) {
+                                    android.R.drawable.ic_media_pause
+                                } else {
+                                    android.R.drawable.ic_media_play
+                                },
+                            ),
+                            contentDescription = if (audioPlayback.currentNoteId == note.id && audioPlayback.isPlaying) "暂停" else "播放",
+                            enabled = canPlayAudio,
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            onClick = onToggleAudioPlayback,
+                        )
+                    }
+                    if (section != NoteListSection.TRASH) {
+                        Box {
+                            CompactActionIcon(
+                                icon = painterResource(id = android.R.drawable.ic_menu_my_calendar),
+                                contentDescription = "添加提醒",
+                                onClick = { reminderMenuExpanded = true },
+                            )
+                            DropdownMenu(expanded = reminderMenuExpanded, onDismissRequest = { reminderMenuExpanded = false }) {
+                                reminderPresets().forEach { (label, atMillis) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            onAddQuickReminder(note.id, atMillis)
+                                            reminderMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // Overflow menu for all other actions
+                    Box {
+                        CompactActionIcon(
+                            icon = painterResource(id = android.R.drawable.ic_menu_sort_by_size),
+                            contentDescription = "更多操作",
+                            onClick = { actionOverflowExpanded = true },
+                        )
+                        DropdownMenu(expanded = actionOverflowExpanded, onDismissRequest = { actionOverflowExpanded = false }) {
+                            if (section != NoteListSection.TRASH) {
+                                DropdownMenuItem(text = { Text("复制") }, onClick = { onCopy(); actionOverflowExpanded = false })
+                                DropdownMenuItem(text = { Text("编辑") }, onClick = { onEdit(); actionOverflowExpanded = false })
+                                when (section) {
+                                    NoteListSection.INBOX -> {
+                                        DropdownMenuItem(text = { Text("归档") }, onClick = { onArchive(); actionOverflowExpanded = false })
+                                    }
+                                    NoteListSection.ARCHIVE -> {
+                                        DropdownMenuItem(text = { Text("取消归档") }, onClick = { onUnarchive(); actionOverflowExpanded = false })
+                                    }
+                                    else -> Unit
+                                }
+                                DropdownMenuItem(text = { Text("删除") }, onClick = { onDelete(); actionOverflowExpanded = false })
+                            }
+                            when (section) {
+                                NoteListSection.TRASH -> {
+                                    DropdownMenuItem(text = { Text("恢复") }, onClick = { onRestore(); actionOverflowExpanded = false })
+                                    DropdownMenuItem(text = { Text("彻底删除") }, onClick = { onDeletePermanently(); actionOverflowExpanded = false })
+                                }
+                                else -> Unit
+                            }
+                            if (section != NoteListSection.TRASH && (note.status.name == "FAILED" || note.status.name == "LOCAL_ONLY")) {
+                                DropdownMenuItem(text = { Text("重新同步") }, onClick = { onRetrySync(); actionOverflowExpanded = false })
+                            }
+                        }
+                    }
+                }
+
+                // Sync error
+                note.syncError?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
             }
         }
     }

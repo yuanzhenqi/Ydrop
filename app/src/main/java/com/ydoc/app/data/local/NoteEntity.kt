@@ -36,4 +36,5 @@ data class NoteEntity(
     val archivedAt: Long?,
     val isTrashed: Boolean,
     val trashedAt: Long?,
+    val tagsJson: String? = null,
 )

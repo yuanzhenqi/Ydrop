@@ -48,6 +48,7 @@ data class ReminderCandidate(
     val title: String,
     val scheduledAt: Long,
     val reason: String? = null,
+    val scheduledAtIso: String? = null,
 )
 
 data class AiSuggestion(
@@ -141,6 +142,10 @@ fun defaultAiPromptTemplate(): String =
     Always write a concise non-empty summary using the user's own perspective and wording style.
     Never describe the note as "the user said", "the user wants", or similar third-person phrasing.
     Use the provided current system time and timezone to resolve relative dates and times.
+    The note content may be in Chinese. Recognize Chinese date/time expressions: 明天(+1d), 后天(+2d), 大后天(+3d), 下周一/下周二 etc., 上午(AM), 下午(PM), 晚上(evening), 凌晨(early morning).
+    When converting: 上午7:30→07:30, 下午3点→15:00, 晚上8点→20:00, 凌晨2点→02:00, 中午12点→12:00.
+    reminderCandidates[].scheduledAt must be the EXACT epoch ms of the resolved future time, computed by adding the date offset to currentTimeEpochMs and adjusting the time-of-day in the user's timezone.
+    reminderCandidates[].scheduledAtIso must be the same resolved time in ISO 8601 format "YYYY-MM-DDTHH:mm" in the user's timezone.
     If the note clearly asks for a reminder or contains a concrete future time, prefer suggestedCategory = REMINDER and create reminderCandidates.
     If the note is more like a planned task or schedule but the exact reminder time is not reliable enough, prefer suggestedCategory = TASK and leave reminderCandidates empty.
     If the note is mainly a plain record with no action or time intent, prefer suggestedCategory = NOTE.
@@ -148,7 +153,6 @@ fun defaultAiPromptTemplate(): String =
     Suggest priority only when it is reasonably inferable; otherwise default to MEDIUM.
     Extract concrete todo items from explicit or strongly implied actions.
     Extract useful entities such as intent, people, dates, times, places, organizations, projects, and reference values when relevant.
-    reminderCandidates[].scheduledAt must represent an absolute Unix millisecond timestamp, not a formatted date string.
     Do not guess reminder times when the time expression is too ambiguous to resolve with confidence.
     """.trimIndent()
 

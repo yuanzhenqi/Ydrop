@@ -32,6 +32,7 @@ data class Note(
     val archivedAt: Long? = null,
     val isTrashed: Boolean = false,
     val trashedAt: Long? = null,
+    val tags: List<String> = emptyList(),
 )
 
 enum class NoteSource {

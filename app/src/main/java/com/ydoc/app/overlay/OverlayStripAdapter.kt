@@ -17,6 +17,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -48,6 +49,7 @@ class OverlayStripAdapter(
         fun onEditingContentChanged(value: String)
         fun onEditingCategoryChanged(category: NoteCategory)
         fun onEditingPriorityChanged(priority: NotePriority)
+        fun onEditingTagsChanged(tags: List<String>)
         fun onSaveEditing()
         fun onCancelEditing()
         fun onExpandedContentLayoutChanged()
@@ -189,7 +191,7 @@ class OverlayStripAdapter(
     }
 }
 
-private class OverlayComposerPressView(
+internal class OverlayComposerPressView(
     context: Context,
 ) : FrameLayout(context) {
 
@@ -216,59 +218,73 @@ private class OverlayComposerPressView(
         }
     }
 
+    private val micIcon: ImageView
+    private val editIcon: ImageView
+
     init {
         layoutParams = RecyclerView.LayoutParams(
             RecyclerView.LayoutParams.MATCH_PARENT,
-            RecyclerView.LayoutParams.WRAP_CONTENT,
+            dpToPx(56),
         ).apply {
             bottomMargin = dpToPx(8)
         }
         foreground = context.getDrawable(android.R.drawable.list_selector_background)
-        background = roundedRect(0xFFF2F4F8.toInt(), dpToPx(16).toFloat())
-        elevation = dpToPx(2).toFloat()
-        setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+        background = roundedRect(0xFF375D50.toInt(), dpToPx(28).toFloat())
+        elevation = dpToPx(4).toFloat()
+        setPadding(dpToPx(14), dpToPx(8), dpToPx(14), dpToPx(8))
         isClickable = true
 
         val root = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-        }
-
-        val chipRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         }
 
-        categoryChip = chip("便签")
-        priorityChip = chip("中").apply {
-            (layoutParams as LinearLayout.LayoutParams).marginStart = dpToPx(6)
+        micIcon = ImageView(context).apply {
+            setImageResource(android.R.drawable.ic_btn_speak_now)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(26), dpToPx(26))
+            imageTintList = android.content.res.ColorStateList.valueOf(0xFFFFFFFF.toInt())
         }
-        chipRow.addView(categoryChip)
-        chipRow.addView(priorityChip)
+
+        val textColumn = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dpToPx(12)
+                marginEnd = dpToPx(12)
+            }
+        }
+
+        categoryChip = chip("便签").apply { visibility = View.GONE }
+        priorityChip = chip("中").apply { visibility = View.GONE }
 
         titleText = TextView(context).apply {
             text = "快速记录"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(0xFF17212B.toInt())
-            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dpToPx(6)
-            }
+            setTextColor(0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         }
 
         subtitleText = TextView(context).apply {
-            text = "点击输入，长按录音"
+            text = "点击输入 · 长按录音"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(0xFF5E6B78.toInt())
-            maxLines = 2
-            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dpToPx(3)
-            }
+            setTextColor(0xCCE8DFD1.toInt())
+            maxLines = 1
+            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         }
 
-        root.addView(chipRow)
-        root.addView(titleText)
-        root.addView(subtitleText)
+        textColumn.addView(titleText)
+        textColumn.addView(subtitleText)
+
+        editIcon = ImageView(context).apply {
+            setImageResource(android.R.drawable.ic_menu_edit)
+            layoutParams = LinearLayout.LayoutParams(dpToPx(22), dpToPx(22))
+            imageTintList = android.content.res.ColorStateList.valueOf(0xCCFFFFFF.toInt())
+        }
+
+        root.addView(micIcon)
+        root.addView(textColumn)
+        root.addView(editIcon)
         addView(root)
 
         setOnTouchListener { _, event ->
@@ -372,27 +388,27 @@ private class OverlayComposerPressView(
     private fun renderComposerState() {
         when {
             cancelOnRelease && (longPressTriggered || isRecording) -> {
-                background = roundedRect(0xFFFFE1E1.toInt(), dpToPx(16).toFloat())
+                background = roundedRect(0xFFC9656C.toInt(), dpToPx(28).toFloat())
                 titleText.text = "松手取消"
-                subtitleText.text = "继续按住并左滑，松手后丢弃这段录音"
-                titleText.setTextColor(0xFF7A1F1F.toInt())
-                subtitleText.setTextColor(0xFF9A3A3A.toInt())
+                subtitleText.text = "左滑后松手丢弃录音"
+                titleText.setTextColor(0xFFFFFFFF.toInt())
+                subtitleText.setTextColor(0xCCFFE1E1.toInt())
             }
 
             longPressTriggered || isRecording -> {
-                background = roundedRect(0xFFE8EDFF.toInt(), dpToPx(16).toFloat())
+                background = roundedRect(0xFF4F86C6.toInt(), dpToPx(28).toFloat())
                 titleText.text = "正在录音"
-                subtitleText.text = "松手结束并保存，左滑到阈值后松手可取消"
-                titleText.setTextColor(0xFF24356D.toInt())
-                subtitleText.setTextColor(0xFF4A5F9A.toInt())
+                subtitleText.text = "松手结束并保存 · 左滑取消"
+                titleText.setTextColor(0xFFFFFFFF.toInt())
+                subtitleText.setTextColor(0xCCDCEAF9.toInt())
             }
 
             else -> {
-                background = roundedRect(0xFFF2F4F8.toInt(), dpToPx(16).toFloat())
+                background = roundedRect(0xFF375D50.toInt(), dpToPx(28).toFloat())
                 titleText.text = "快速记录"
-                subtitleText.text = "点击输入，长按录音"
-                titleText.setTextColor(0xFF17212B.toInt())
-                subtitleText.setTextColor(0xFF5E6B78.toInt())
+                subtitleText.text = "点击输入 · 长按录音"
+                titleText.setTextColor(0xFFFFFFFF.toInt())
+                subtitleText.setTextColor(0xCCE8DFD1.toInt())
             }
         }
     }
@@ -872,11 +888,13 @@ private class OverlayEditingNoteView(
 
     private val titleText: TextView
     private val contentInput: EditText
+    private val tagInput: EditText
     private val typeButtons: Map<NoteCategory, TextView>
     private val priorityButtons: Map<NotePriority, TextView>
     private val cancelButton: TextView
     private val saveButton: TextView
     private var watcher: TextWatcher? = null
+    private var tagWatcher: TextWatcher? = null
     private var currentListener: OverlayStripAdapter.Listener? = null
     private var paletteSeedNote: Note? = null
     private var currentCategory: NoteCategory = NoteCategory.NOTE
@@ -963,6 +981,35 @@ private class OverlayEditingNoteView(
             }
         }
 
+        val tagLabel = TextView(context).apply {
+            text = "标签"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(0xFF61707E.toInt())
+            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dpToPx(8)
+            }
+        }
+        tagInput = EditText(context).apply {
+            hint = "逗号分隔，如：工作, 日程"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(0xFF18212B.toInt())
+            background = roundedRect(0xFFF3FAF5.toInt(), dpToPx(12).toFloat())
+            setPadding(dpToPx(10), dpToPx(6), dpToPx(10), dpToPx(6))
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            isSingleLine = true
+            imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dpToPx(4)
+            }
+            setOnTouchListener { view, event ->
+                view.parent?.requestDisallowInterceptTouchEvent(
+                    event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL,
+                )
+                false
+            }
+        }
+
         val actionRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -987,6 +1034,8 @@ private class OverlayEditingNoteView(
         root.addView(contentInput)
         root.addView(typeRow)
         root.addView(priorityRow)
+        root.addView(tagLabel)
+        root.addView(tagInput)
         root.addView(actionRow)
         addView(root)
     }
@@ -1008,6 +1057,18 @@ private class OverlayEditingNoteView(
         }
         watcher = contentInput.addTextChangedListener { text ->
             currentListener?.onEditingContentChanged(text?.toString().orEmpty())
+        }
+        tagWatcher?.let(tagInput::removeTextChangedListener)
+        val tagText = item.tags.joinToString(", ")
+        if (tagInput.text.toString() != tagText) {
+            tagInput.setText(tagText)
+        }
+        tagWatcher = tagInput.addTextChangedListener { text ->
+            val parsed = text?.toString().orEmpty()
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            currentListener?.onEditingTagsChanged(parsed)
         }
         playCardEntranceAnimation()
     }
@@ -1049,6 +1110,9 @@ private class OverlayEditingNoteView(
         contentInput.setTextColor(palette.primaryText)
         contentInput.setHintTextColor(palette.secondaryText)
         contentInput.background = roundedRect(palette.inputBackground, dpToPx(12).toFloat())
+        tagInput.setTextColor(palette.primaryText)
+        tagInput.setHintTextColor(palette.secondaryText)
+        tagInput.background = roundedRect(palette.inputBackground, dpToPx(12).toFloat())
         styleActionButton(cancelButton, filled = false)
         styleActionButton(saveButton, filled = true)
     }

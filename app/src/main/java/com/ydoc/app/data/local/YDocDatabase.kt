@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AiSuggestionEntity::class,
         ReminderEntryEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = false,
 )
 abstract class YDocDatabase : RoomDatabase() {
@@ -151,6 +151,12 @@ abstract class YDocDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE notes ADD COLUMN tagsJson TEXT")
+            }
+        }
+
         fun build(context: Context): YDocDatabase =
             INSTANCE ?: synchronized(lock) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -161,7 +167,7 @@ abstract class YDocDatabase : RoomDatabase() {
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
                     MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
                     MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-                    MIGRATION_12_13,
+                    MIGRATION_12_13, MIGRATION_13_14,
                 ).build().also { INSTANCE = it }
             }
     }

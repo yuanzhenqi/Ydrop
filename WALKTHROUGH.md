@@ -336,3 +336,80 @@ AI 第一阶段是非破坏式建议流，单独存储：
 - 飞书 / 聊天软件外发提醒
 - 离线 ASR fallback
 - 更完整的自动化测试链路
+
+## 里程碑 G：tags 系统 + 快速记录栏底部固定 + AI 时间提取优化
+
+> 分支 `claude/1.2.0`，未提交 WIP，基于 `e73c6ff`
+> 改动 15 文件，+397 -86 行
+
+### 本轮目标
+
+1. Note 支持用户自定义标签，在主界面卡片上显示
+2. 快速记录栏（主界面 + 悬浮窗）在侧边栏拉开时固定在屏幕底部居中
+3. AI 整理提取提醒时间不准（中文相对时间解析错误）
+
+### 涉及模块
+
+#### data — tags 存储层
+
+- `Note.kt` 新增 `tags: List<String>` 字段
+- `NoteEntity.kt` 新增 `tagsJson: String?` 列（JSON 序列化）
+- `YDocDatabase` Migration 13→14，`ALTER TABLE notes ADD COLUMN tagsJson TEXT`
+- `Mappers.kt` 双向转换 tags ↔ tagsJson
+- `MarkdownFormatter` frontmatter 增加 `tags:` 行，导入时解析回 `List<String>`
+- `NoteRepository.createTextNote()` 接受 tags 参数；`savePulledNote()` 保留远端 tags
+- `AppContainer` AI 专用 OkHttpClient，独立超时（connect 15s / read 90s / call 120s），防止 provider 挂起卡死 AiSuggestion
+
+#### ui — 主界面改动
+
+- `CaptureDraft` / `EditDraft` 增加 `tags` 字段
+- `HeroCaptureCard` 从 LazyColumn 首个 item 移到外层 Box 底部固定（`Modifier.align(BottomCenter)`）
+- `EditNoteCard` 增加标签输入框（逗号分隔）
+- `NoteCardV2` 用 `FlowRow` 显示 `#tag` 芯片
+- `NoteCardV2` 操作区增加"复制内容"按钮（`onCopyNote`）
+- 日历 agenda 视图增加「新增日程」按钮 + `CreateReminderDialog`（选日期、时、分）
+- `AppViewModel` 新增 `updateDraftTags` / `updateEditingTags` / `copyNoteContent` / `createReminderForDate`
+
+#### overlay — 悬浮窗快速记录栏
+
+- `overlay_handle.xml` 新增 `overlayStripEntryBar`（FrameLayout 子 View，`layout_gravity=bottom|center_horizontal`）
+- `OverlayHandleService`：strip 展开时 ComposerEntryView 渲染到 `stripEntryBar` 而非 RecyclerView
+- RecyclerView 底部 padding 从 4dp 改为 92dp，给底部浮层留空间
+- `OverlayStripAdapter`：`OverlayComposerPressView` 改为 internal，供 HandleService 直接访问
+- strip 编辑卡 overlay 也同步支持 tags
+
+#### ai — 时间提取 prompt 优化
+
+- `RelayAiClient.buildSystemPrompt()` 新增 TIME RESOLUTION RULES 段：
+  - 中文相对时间映射表（明天/后天/大后天/下周一/上午/下午/晚上/凌晨）
+  - 明确要求从 `currentTimeEpochMs` 算出绝对 epoch ms
+  - 强调输出前要 double-check 算术
+- `defaultAiPromptTemplate()` 补充中文时间表达识别指导
+
+### 关键决策
+
+- tags 用 `tagsJson`（JSON 字符串）存在 Room 而非关联表——tag 数量少、不需要按 tag 查询，简单够用
+- 主界面 HeroCaptureCard 用 Box 叠加而非 bottomBar，避免干扰 Scaffold 布局
+- 悬浮窗快速记录栏用独立 LinearLayout 浮层，脱离 RecyclerView 滚动
+- AI 时间 prompt 用显式映射表而不是让模型自己推算中文时间，降低出错率
+
+### 遗留 / 待办
+
+- 标签输入目前是逗号分隔文本框，后续可改为 chip 输入 + 自动补全
+- 悬浮窗 stripEntryBar 需要真机验证不同屏幕尺寸的适配
+- AI 时间提取优化需要用真实中文时间表达做端到端验证
+- tags 尚未接入 AI 建议流程（AI 不会建议标签）
+
+### 手动回归清单
+
+- [ ] 悬浮窗 strip 展开，快速记录栏是否显示在底部居中
+- [ ] 悬浮窗 strip 展开后长按快速记录栏录音，是否能正常触发
+- [ ] 主界面快速记录栏是否固定在底部，不随列表滚动
+- [ ] 主界面新建便签时填写标签，保存后 NoteCard 上是否显示 #tag
+- [ ] 编辑已有便签时修改标签，保存后标签是否正确更新
+- [ ] WebDAV 同步后远端 markdown 文件 frontmatter 是否包含 tags 行
+- [ ] 从 NAS 拉取带 tags 的 markdown 文件，本地是否正确还原标签
+- [ ] Room Migration 13→14 在已安装 App 上是否成功执行
+- [ ] AI 分析包含"明天上午 X 点"类时间表达的便签，提醒时间是否准确
+- [ ] 日历 agenda 视图「新增日程」弹窗创建提醒是否正常
+- [ ] NoteCard 复制内容按钮是否将文本复制到系统剪贴板

@@ -45,12 +45,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
 import java.util.Calendar
 
 data class CaptureDraft(
     val content: String = "",
     val category: NoteCategory = NoteCategory.NOTE,
     val priority: NotePriority = NotePriority.MEDIUM,
+    val tags: List<String> = emptyList(),
 )
 
 data class EditDraft(
@@ -58,6 +60,7 @@ data class EditDraft(
     val content: String,
     val category: NoteCategory,
     val priority: NotePriority,
+    val tags: List<String> = emptyList(),
 )
 
 enum class NoteListSection {
@@ -87,6 +90,9 @@ data class AppUiState(
     val editingNote: EditDraft? = null,
     val pendingQuickRecord: Boolean = false,
     val audioPlayback: AudioPlaybackUiState = AudioPlaybackUiState(),
+    val tagFilter: Set<String> = emptySet(),
+    val searchQuery: String = "",
+    val suggestedTags: List<String> = emptyList(),
 )
 
 class AppViewModel(
@@ -108,7 +114,15 @@ class AppViewModel(
             container.syncTargetRepository.seedDefaults()
             launch {
                 container.noteRepository.observeActiveNotes().collect { notes ->
-                    _uiState.value = _uiState.value.copy(notes = notes)
+                    val suggested = notes
+                        .flatMap { it.tags }
+                        .groupingBy { it }
+                        .eachCount()
+                        .entries
+                        .sortedByDescending { it.value }
+                        .take(8)
+                        .map { it.key }
+                    _uiState.value = _uiState.value.copy(notes = notes, suggestedTags = suggested)
                 }
             }
             launch {
@@ -164,10 +178,22 @@ class AppViewModel(
     fun updateDraftContent(value: String) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(content = value)) }
     fun updateDraftCategory(value: NoteCategory) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(category = value)) }
     fun updateDraftPriority(value: NotePriority) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(priority = value)) }
+    fun updateDraftTags(value: List<String>) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(tags = value)) }
     fun toggleCaptureExpanded() { _uiState.value = _uiState.value.copy(captureExpanded = !_uiState.value.captureExpanded) }
 
+    fun toggleTagFilter(tag: String) {
+        val current = _uiState.value.tagFilter
+        _uiState.value = _uiState.value.copy(tagFilter = if (tag in current) current - tag else current + tag)
+    }
+
+    fun clearTagFilter() { _uiState.value = _uiState.value.copy(tagFilter = emptySet()) }
+
+    fun updateSearchQuery(query: String) { _uiState.value = _uiState.value.copy(searchQuery = query) }
+
+    fun clearSearch() { _uiState.value = _uiState.value.copy(searchQuery = "") }
+
     fun startEditing(note: Note) {
-        _uiState.value = _uiState.value.copy(editingNote = EditDraft(note.id, note.content, note.category, note.priority))
+        _uiState.value = _uiState.value.copy(editingNote = EditDraft(note.id, note.content, note.category, note.priority, note.tags))
     }
 
     fun startEditingById(noteId: String) {
@@ -183,7 +209,7 @@ class AppViewModel(
                     note.isArchived -> NoteListSection.ARCHIVE
                     else -> NoteListSection.INBOX
                 },
-                editingNote = EditDraft(note.id, note.content, note.category, note.priority),
+                editingNote = EditDraft(note.id, note.content, note.category, note.priority, note.tags),
             )
         }
     }
@@ -191,6 +217,7 @@ class AppViewModel(
     fun updateEditingContent(value: String) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(content = value)) }
     fun updateEditingCategory(value: NoteCategory) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(category = value)) }
     fun updateEditingPriority(value: NotePriority) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(priority = value)) }
+    fun updateEditingTags(value: List<String>) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(tags = value)) }
     fun cancelEditing() { _uiState.value = _uiState.value.copy(editingNote = null) }
     fun clearMessage() { _uiState.value = _uiState.value.copy(message = null) }
     fun dismissMicrophonePermissionRequest() { _uiState.value = _uiState.value.copy(requiresMicrophonePermission = false) }
@@ -199,6 +226,21 @@ class AppViewModel(
             settings = _uiState.value.settings.copy(requiresOverlayPermission = false),
         )
     }
+    fun copyNoteContent(noteId: String) {
+        viewModelScope.launch {
+            val note = withContext(Dispatchers.IO) { container.noteRepository.getNote(noteId) }
+            if (note == null) {
+                _uiState.value = _uiState.value.copy(message = "找不到这条记录。")
+                return@launch
+            }
+            val text = (note.transcript ?: note.content).ifBlank { note.title }
+            val clipboard = getApplication<Application>()
+                .getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(note.title, text))
+            _uiState.value = _uiState.value.copy(message = "已复制到剪贴板。")
+        }
+    }
+
     fun showSection(section: NoteListSection) { _uiState.value = _uiState.value.copy(currentSection = section) }
     fun prepareQuickRecordLaunch() { _uiState.value = _uiState.value.copy(pendingQuickRecord = true) }
     fun consumeQuickRecordLaunch() { _uiState.value = _uiState.value.copy(pendingQuickRecord = false) }
@@ -309,11 +351,16 @@ class AppViewModel(
     }
 
     fun createReminderFromSuggestion(noteId: String, candidate: ReminderCandidate) {
+        val scheduledAt = resolveScheduledAt(candidate)
+        if (scheduledAt <= System.currentTimeMillis()) {
+            _uiState.value = _uiState.value.copy(message = "AI 建议的时间已过，请手动设置提醒。")
+            return
+        }
         viewModelScope.launch {
             scheduleReminderForNote(
                 noteId = noteId,
                 title = candidate.title,
-                scheduledAt = candidate.scheduledAt,
+                scheduledAt = scheduledAt,
                 source = ReminderSource.AI,
             )
         }
@@ -327,6 +374,45 @@ class AppViewModel(
                 scheduledAt = scheduledAt,
                 source = ReminderSource.MANUAL,
             )
+        }
+    }
+
+    fun createReminderForDate(dayMillis: Long, title: String, hour: Int, minute: Int) {
+        viewModelScope.launch {
+            val scheduledAt = Calendar.getInstance().apply {
+                timeInMillis = dayMillis
+                set(Calendar.HOUR_OF_DAY, hour)
+                set(Calendar.MINUTE, minute)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+
+            if (scheduledAt <= System.currentTimeMillis()) {
+                _uiState.value = _uiState.value.copy(message = "所选时间已过，请选择未来的时间。")
+                return@launch
+            }
+
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val note = container.noteRepository.createTextNote(
+                        content = title,
+                        category = NoteCategory.REMINDER,
+                        priority = NotePriority.MEDIUM,
+                    )
+                    val reminder = container.reminderRepository.createReminder(
+                        noteId = note.id,
+                        title = title,
+                        scheduledAt = scheduledAt,
+                        source = ReminderSource.MANUAL,
+                    )
+                    container.reminderScheduler.schedule(reminder)
+                    syncStateIfEnabled(force = true)
+                }
+            }.onSuccess {
+                _uiState.value = _uiState.value.copy(message = "日程已创建。")
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(message = it.message ?: "创建日程失败。")
+            }
         }
     }
 
@@ -391,23 +477,23 @@ class AppViewModel(
             return
         }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSaving = true)
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val note = container.noteRepository.createTextNote(content, draft.category, draft.priority)
-                    syncIfEnabled(note)
-                    container.aiOrchestrator.maybeAnalyze(note.id, AiRunTrigger.TEXT_SAVE)
-                }
-            }.onSuccess {
-                _uiState.value = _uiState.value.copy(
-                    draft = CaptureDraft(category = draft.category, priority = draft.priority),
-                    captureExpanded = false,
-                    message = if (_uiState.value.settings.webDavEnabled && _uiState.value.settings.webDav.autoSync) "已保存并触发实时同步。" else "已保存到本地 inbox。",
-                )
-            }.onFailure {
-                _uiState.value = _uiState.value.copy(message = it.message ?: "保存失败。")
+            val note = withContext(Dispatchers.IO) {
+                container.noteRepository.createTextNote(content, draft.category, draft.priority, draft.tags)
             }
-            _uiState.value = _uiState.value.copy(isSaving = false)
+            // 立即重置 draft，不等待 sync + AI
+            _uiState.value = _uiState.value.copy(
+                draft = CaptureDraft(category = draft.category, priority = draft.priority),
+                captureExpanded = false,
+                isSaving = false,
+                message = "已保存到本地 inbox。",
+            )
+            // sync + AI 在后台独立运行，不阻塞 UI
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { syncIfEnabled(note) }
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { container.aiOrchestrator.maybeAnalyze(note.id, AiRunTrigger.TEXT_SAVE) }
+            }
         }
     }
 
@@ -418,19 +504,20 @@ class AppViewModel(
             return
         }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSaving = true)
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val existing = container.noteRepository.getNote(editing.noteId) ?: error("找不到这条记录")
-                    val updated = container.noteRepository.saveEditedNote(existing.copy(content = editing.content.trim(), category = editing.category, priority = editing.priority))
-                    syncIfEnabled(updated)
-                }
-            }.onSuccess {
-                _uiState.value = _uiState.value.copy(editingNote = null, message = "记录已更新。")
-            }.onFailure {
-                _uiState.value = _uiState.value.copy(message = it.message ?: "更新失败。")
+            val updated = withContext(Dispatchers.IO) {
+                val existing = container.noteRepository.getNote(editing.noteId) ?: return@withContext null
+                container.noteRepository.saveEditedNote(
+                    existing.copy(content = editing.content.trim(), category = editing.category, priority = editing.priority, tags = editing.tags),
+                )
             }
-            _uiState.value = _uiState.value.copy(isSaving = false)
+            if (updated != null) {
+                _uiState.value = _uiState.value.copy(editingNote = null, isSaving = false, message = "记录已更新。")
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { syncIfEnabled(updated) }
+                }
+            } else {
+                _uiState.value = _uiState.value.copy(isSaving = false, message = "找不到这条记录。")
+            }
         }
     }
 
@@ -438,6 +525,10 @@ class AppViewModel(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching {
+                    container.reminderRepository.getByNoteId(noteId).forEach { reminder ->
+                        container.reminderScheduler.cancel(reminder.id, reminder.noteId, reminder.title)
+                    }
+                    container.reminderRepository.deleteByNoteId(noteId)
                     container.noteRepository.trashNote(noteId)
                     syncStateIfEnabled(force = true)
                 }
@@ -1142,6 +1233,16 @@ class AppViewModel(
         }
     }
 
+    private fun resolveScheduledAt(candidate: ReminderCandidate): Long {
+        // 优先使用 ISO 字符串解析（确定性计算，零误差）
+        candidate.scheduledAtIso?.let { iso ->
+            val parsed = parseIsoToLocalEpoch(iso)
+            if (parsed > 0) return parsed
+        }
+        // 回退到模型返回的 epoch ms
+        return candidate.scheduledAt
+    }
+
     companion object {
         fun factory(application: Application, container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -1149,4 +1250,13 @@ class AppViewModel(
                 override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = AppViewModel(application, container) as T
             }
     }
+}
+
+private fun parseIsoToLocalEpoch(iso: String): Long {
+    val trimmed = iso.trim()
+    // 支持格式: "YYYY-MM-DDTHH:mm" 或 "YYYY-MM-DD HH:mm"
+    val normalized = trimmed.replace(" ", "T")
+    val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", java.util.Locale.US)
+    sdf.timeZone = java.util.TimeZone.getDefault()
+    return runCatching { sdf.parse(normalized)?.time ?: 0L }.getOrDefault(0L)
 }

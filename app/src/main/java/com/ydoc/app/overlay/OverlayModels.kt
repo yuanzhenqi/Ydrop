@@ -49,6 +49,7 @@ sealed interface OverlayStripItem {
         val draft: String,
         val category: NoteCategory,
         val priority: NotePriority,
+        val tags: List<String> = emptyList(),
     ) : OverlayStripItem
 }
 
@@ -68,6 +69,7 @@ data class OverlayUiState(
     val editingDraft: String = "",
     val editingCategory: NoteCategory = NoteCategory.NOTE,
     val editingPriority: NotePriority = NotePriority.MEDIUM,
+    val editingTags: List<String> = emptyList(),
     val imeInsetBottom: Int = 0,
     val imeVisible: Boolean = false,
     val dockSide: OverlayDockSide = OverlayDockSide.RIGHT,

@@ -31,6 +31,15 @@ class AppContainer(context: Context) {
         .addInterceptor(logger)
         .build()
 
+    // AI/LLM 专用 client，显式超时防止 provider 挂起导致 AiSuggestion 卡在 RUNNING
+    private val aiHttpClient = OkHttpClient.Builder()
+        .addInterceptor(logger)
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
     private val markdownFormatter = MarkdownFormatter()
     val audioRecorder = AudioRecorder(appContext)
     val localAudioExporter = LocalAudioExporter(appContext)
@@ -41,7 +50,7 @@ class AppContainer(context: Context) {
     val settingsStore = SettingsStore(appContext)
     val relayStorageClient: RelayStorageClient = SelfHostedRelayClient(httpClient)
     val volcengineTranscriptionClient = VolcengineTranscriptionClient(httpClient)
-    val aiClient = RelayAiClient(httpClient)
+    val aiClient = RelayAiClient(aiHttpClient)
     val syncClients: List<SyncClient> = listOf(
         WebDavSyncClient(httpClient, markdownFormatter),
     )

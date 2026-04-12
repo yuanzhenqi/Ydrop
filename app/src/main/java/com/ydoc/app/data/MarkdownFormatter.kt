@@ -59,6 +59,7 @@ class MarkdownFormatter {
         appendLine("category: $categoryLabel")
         appendLine("priority: $priorityLabel")
         appendLine("archived: ${note.isArchived}")
+        if (note.tags.isNotEmpty()) appendLine("tags: ${note.tags.joinToString(",")}")
         appendLine("status: ${note.status.name.lowercase()}")
         appendLine("transcriptionStatus: ${note.transcriptionStatus.name.lowercase()}")
         note.audioPath?.let { appendLine("audioPath: \"${it.replace("\\\\", "/")}\"") }
@@ -99,6 +100,7 @@ class MarkdownFormatter {
         val category = parseCategory(frontmatter["category"])
         val priority = parsePriority(frontmatter["priority"])
         val isArchived = parseArchived(frontmatter["archived"], remotePath)
+        val tags = frontmatter["tags"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
         val title = extractTitle(content)
         val body = extractBody(content)
         val isVoice = source == NoteSource.VOICE
@@ -135,6 +137,7 @@ class MarkdownFormatter {
             archivedAt = if (isArchived) updatedAt else null,
             isTrashed = false,
             trashedAt = null,
+            tags = tags,
         )
     }
 
