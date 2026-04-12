@@ -3,6 +3,7 @@ package com.ydoc.app.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -13,6 +14,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Box
@@ -57,7 +60,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -375,6 +381,7 @@ private fun YDocScreen(
                     onValueChange = onSearchQueryChange,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .statusBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     placeholder = { Text("搜索标题、内容或标签") },
                     singleLine = true,
@@ -487,23 +494,7 @@ private fun YDocScreen(
                         )
                     }
                 }
-                if (state.currentSection == NoteListSection.INBOX) {
-                    item {
-                        ReminderCalendarPreviewCardV2(
-                            reminders = upcomingReminders,
-                            notes = state.notes + state.archivedNotes + state.trashedNotes,
-                            onOpenNote = { note -> onEditNote(note) },
-                            onArchiveNote = onArchiveNote,
-                            onUnarchiveNote = onUnarchiveNote,
-                            onDeleteNote = onDeleteNote,
-                            onRestoreNote = onRestoreNote,
-                            onCancelReminder = onCancelReminder,
-                            onExportToAlarm = onExportReminderToAlarm,
-                            onOpenCalendar = { onShowSection(NoteListSection.CALENDAR) },
-                            onCreateReminderForDate = onCreateReminderForDate,
-                        )
-                    }
-                }
+                // 日历预览已移除，完整日历通过 CALENDAR section tab 访问
                 if (state.currentSection == NoteListSection.CALENDAR) {
                     item {
                         ReminderCalendarSection(
@@ -523,28 +514,46 @@ private fun YDocScreen(
                         item { EmptyStateCardV2(section = state.currentSection) }
                 } else {
                     items(currentNotes, key = { it.id }) { note ->
-                        NoteCardV2(
-                            note = note,
+                        SwipeableNoteCard(
                             section = state.currentSection,
-                            suggestion = state.aiSuggestions[note.id],
-                            audioPlayback = state.audioPlayback,
-                            canPlayAudio = canPlayAudio(note),
-                            onToggleAudioPlayback = { onToggleAudioPlayback(note.id) },
-                            onSeekAudio = onSeekAudio,
-                            onEdit = { onEditNote(note) },
-                            onArchive = { onArchiveNote(note.id) },
-                            onUnarchive = { onUnarchiveNote(note.id) },
-                            onDelete = { onDeleteNote(note.id) },
-                            onRestore = { onRestoreNote(note.id) },
-                            onDeletePermanently = { onDeletePermanently(note.id) },
-                            onRetrySync = { onRetrySync(note.id) },
-                            onRunAi = { onRunAi(note.id) },
-                            onApplyAi = { onApplyAi(note.id) },
-                            onDismissAi = { onDismissAi(note.id) },
-                            onCreateReminderFromSuggestion = { candidate -> onCreateReminderFromSuggestion(note.id, candidate) },
-                            onAddQuickReminder = onAddQuickReminder,
-                            onCopy = { onCopyNote(note.id) },
-                        )
+                            onSwipeRight = {
+                                when (state.currentSection) {
+                                    NoteListSection.INBOX -> onArchiveNote(note.id)
+                                    NoteListSection.ARCHIVE -> onUnarchiveNote(note.id)
+                                    NoteListSection.TRASH -> onRestoreNote(note.id)
+                                    else -> {}
+                                }
+                            },
+                            onSwipeLeft = {
+                                when (state.currentSection) {
+                                    NoteListSection.TRASH -> onDeletePermanently(note.id)
+                                    else -> onDeleteNote(note.id)
+                                }
+                            },
+                        ) {
+                            NoteCardV2(
+                                note = note,
+                                section = state.currentSection,
+                                suggestion = state.aiSuggestions[note.id],
+                                audioPlayback = state.audioPlayback,
+                                canPlayAudio = canPlayAudio(note),
+                                onToggleAudioPlayback = { onToggleAudioPlayback(note.id) },
+                                onSeekAudio = onSeekAudio,
+                                onEdit = { onEditNote(note) },
+                                onArchive = { onArchiveNote(note.id) },
+                                onUnarchive = { onUnarchiveNote(note.id) },
+                                onDelete = { onDeleteNote(note.id) },
+                                onRestore = { onRestoreNote(note.id) },
+                                onDeletePermanently = { onDeletePermanently(note.id) },
+                                onRetrySync = { onRetrySync(note.id) },
+                                onRunAi = { onRunAi(note.id) },
+                                onApplyAi = { onApplyAi(note.id) },
+                                onDismissAi = { onDismissAi(note.id) },
+                                onCreateReminderFromSuggestion = { candidate -> onCreateReminderFromSuggestion(note.id, candidate) },
+                                onAddQuickReminder = onAddQuickReminder,
+                                onCopy = { onCopyNote(note.id) },
+                            )
+                        }
                     }
                 }
             }
@@ -1758,10 +1767,11 @@ private fun ReminderDayAgendaList(
         reminders.forEach { reminder ->
             val note = notesById[reminder.noteId]
             val reminderTitle = reminder.title.ifBlank { "未命名提醒" }
-            val reminderMeta = buildString {
-                append(safeReminderTime(reminder.scheduledAt))
-                append(" · ")
-                append(reminder.status.name)
+            val statusLabel = when (reminder.status) {
+                ReminderStatus.SCHEDULED -> "待触发"
+                ReminderStatus.FIRED -> "已触发"
+                ReminderStatus.CANCELLED -> "已取消"
+                else -> reminder.status.name
             }
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -1772,146 +1782,89 @@ private fun ReminderDayAgendaList(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // 头部：时间 + 标题 + 状态
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(
+                        Text(
+                            safeReminderTime(reminder.scheduledAt),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            reminderTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(reminderTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        StatusPill(
+                            label = statusLabel,
+                            color = when (reminder.status) {
+                                ReminderStatus.SCHEDULED -> MaterialTheme.colorScheme.primaryContainer
+                                ReminderStatus.FIRED -> MaterialTheme.colorScheme.secondaryContainer
+                                ReminderStatus.CANCELLED -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        )
+                    }
+
+                    // 关联便签预览
+                    if (note != null) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                        Text(
+                            note.displayTitleForMainCard().ifBlank { "关联便签" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        noteCalendarSnippet(note)?.let { snippet ->
                             Text(
-                                reminderMeta,
+                                snippet,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            note?.let {
-                                ReminderActionIconButton(
-                                    iconRes = R.drawable.ic_overlay_edit,
-                                    contentDescription = "打开便签",
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    onClick = { onOpenNote(it) },
-                                )
-                            }
-                            ReminderActionIconButton(
-                                iconRes = R.drawable.ic_overlay_remind,
-                                contentDescription = "导出闹钟",
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                onClick = { onExportToAlarm(reminder.id) },
-                            )
-                            if (reminder.status == ReminderStatus.SCHEDULED) {
-                                ReminderActionIconButton(
-                                    iconRes = R.drawable.ic_reminder_cancel,
-                                    contentDescription = "取消提醒",
-                                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    onClick = { onCancelReminder(reminder.id) },
-                                )
-                            }
                         }
                     }
-                    if (note != null) {
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = note.colorToken.toColor().copy(alpha = 0.08f),
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
+
+                    // 底部操作行
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        CompactActionIcon(
+                            icon = painterResource(id = R.drawable.ic_overlay_remind),
+                            contentDescription = "导出闹钟",
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            onClick = { onExportToAlarm(reminder.id) },
+                        )
+                        if (reminder.status == ReminderStatus.SCHEDULED) {
+                            CompactActionIcon(
+                                icon = painterResource(id = R.drawable.ic_reminder_cancel),
+                                contentDescription = "取消提醒",
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                iconTint = MaterialTheme.colorScheme.onErrorContainer,
+                                onClick = { onCancelReminder(reminder.id) },
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (note != null) {
+                            FilledTonalButton(
+                                onClick = { onOpenNote(note) },
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        note.displayTitleForMainCard().ifBlank { "关联便签" },
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    StatusPill(
-                                        label = noteCalendarStateLabel(note),
-                                        color = noteCalendarStateColor(note),
-                                    )
-                                }
-                                noteCalendarSnippet(note)?.let { snippet ->
-                                    Text(
-                                        snippet,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    when {
-                                        note.isTrashed -> {
-                                            ReminderActionIconButton(
-                                                iconRes = android.R.drawable.ic_menu_revert,
-                                                contentDescription = "恢复便签",
-                                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                onClick = { onRestoreNote(note.id) },
-                                            )
-                                        }
-
-                                        note.isArchived -> {
-                                            ReminderActionIconButton(
-                                                iconRes = android.R.drawable.ic_menu_revert,
-                                                contentDescription = "取消归档",
-                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                onClick = { onUnarchiveNote(note.id) },
-                                            )
-                                            ReminderActionIconButton(
-                                                iconRes = android.R.drawable.ic_menu_delete,
-                                                contentDescription = "删除便签",
-                                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
-                                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                                                onClick = { onDeleteNote(note.id) },
-                                            )
-                                        }
-
-                                        else -> {
-                                            ReminderActionIconButton(
-                                                iconRes = android.R.drawable.ic_menu_save,
-                                                contentDescription = "归档便签",
-                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                onClick = { onArchiveNote(note.id) },
-                                            )
-                                            ReminderActionIconButton(
-                                                iconRes = android.R.drawable.ic_menu_delete,
-                                                contentDescription = "删除便签",
-                                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
-                                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                                                onClick = { onDeleteNote(note.id) },
-                                            )
-                                        }
-                                    }
-                                }
+                                Text("打开便签", style = MaterialTheme.typography.labelMedium)
                             }
                         }
-                    } else {
-                        Text(
-                            "关联便签不可用",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
             }
@@ -2080,6 +2033,61 @@ private fun TagFilterBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableNoteCard(
+    section: NoteListSection,
+    onSwipeRight: () -> Unit,
+    onSwipeLeft: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> { onSwipeRight(); true }
+                SwipeToDismissBoxValue.EndToStart -> { onSwipeLeft(); true }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        },
+        positionalThreshold = { it * 0.25f },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            val direction = dismissState.dismissDirection
+            val color by animateColorAsState(
+                when (direction) {
+                    SwipeToDismissBoxValue.StartToEnd -> Color(0xFF2E7D61)
+                    SwipeToDismissBoxValue.EndToStart -> Color(0xFFC44545)
+                    else -> Color.Transparent
+                },
+                label = "swipeBg",
+            )
+            val label = when {
+                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.INBOX -> "归档"
+                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.ARCHIVE -> "取消归档"
+                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.TRASH -> "恢复"
+                direction == SwipeToDismissBoxValue.EndToStart && section == NoteListSection.TRASH -> "彻底删除"
+                direction == SwipeToDismissBoxValue.EndToStart -> "删除"
+                else -> ""
+            }
+            val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(color, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 24.dp),
+                contentAlignment = alignment,
+            ) {
+                if (label.isNotEmpty()) {
+                    Text(label, color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        },
+        content = { content() },
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NoteCardV2(
@@ -2108,7 +2116,6 @@ private fun NoteCardV2(
     var expanded by remember(note.id) { mutableStateOf(false) }
     var showOriginalContent by remember(note.id, note.originalContent) { mutableStateOf(false) }
     var reminderMenuExpanded by remember(note.id) { mutableStateOf(false) }
-    var actionOverflowExpanded by remember(note.id) { mutableStateOf(false) }
     val isVoiceNote = note.source == NoteSource.VOICE
     val isPlayingThisNote = audioPlayback.currentNoteId == note.id &&
         (audioPlayback.isPlaying || audioPlayback.isBuffering || audioPlayback.positionMs > 0)
@@ -2133,7 +2140,10 @@ private fun NoteCardV2(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier.clickable { expanded = !expanded },
+        modifier = Modifier.clickable(
+            indication = null,
+            interactionSource = remember { MutableInteractionSource() },
+        ) { expanded = !expanded },
     ) {
         Column(
             modifier = Modifier
@@ -2276,12 +2286,13 @@ private fun NoteCardV2(
                     AudioPlaybackBar(playback = audioPlayback, accent = accent, onSeekAudio = onSeekAudio)
                 }
 
-                // Action row: play + reminder + overflow menu
+                // Action row: inline buttons
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (isVoiceNote) {
+                    if (isVoiceNote && section != NoteListSection.TRASH) {
                         CompactActionIcon(
                             icon = painterResource(
                                 id = if (audioPlayback.currentNoteId == note.id && audioPlayback.isPlaying) {
@@ -2297,6 +2308,65 @@ private fun NoteCardV2(
                             onClick = onToggleAudioPlayback,
                         )
                     }
+                    when (section) {
+                        NoteListSection.INBOX, NoteListSection.ARCHIVE -> {
+                            CompactActionIcon(
+                                icon = painterResource(id = android.R.drawable.ic_menu_manage),
+                                contentDescription = "AI 整理",
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                onClick = onRunAi,
+                            )
+                            CompactActionIcon(
+                                icon = painterResource(id = R.drawable.ic_overlay_copy),
+                                contentDescription = "复制",
+                                onClick = onCopy,
+                            )
+                            CompactActionIcon(
+                                icon = painterResource(id = R.drawable.ic_overlay_edit),
+                                contentDescription = "编辑",
+                                onClick = onEdit,
+                            )
+                            if (section == NoteListSection.INBOX) {
+                                CompactActionIcon(
+                                    icon = painterResource(id = android.R.drawable.ic_menu_save),
+                                    contentDescription = "归档",
+                                    onClick = onArchive,
+                                )
+                            } else {
+                                CompactActionIcon(
+                                    icon = painterResource(id = android.R.drawable.ic_menu_revert),
+                                    contentDescription = "取消归档",
+                                    onClick = onUnarchive,
+                                )
+                            }
+                            CompactActionIcon(
+                                icon = painterResource(id = android.R.drawable.ic_menu_delete),
+                                contentDescription = "删除",
+                                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                                iconTint = MaterialTheme.colorScheme.onErrorContainer,
+                                onClick = onDelete,
+                            )
+                        }
+                        NoteListSection.TRASH -> {
+                            CompactActionIcon(
+                                icon = painterResource(id = android.R.drawable.ic_menu_revert),
+                                contentDescription = "恢复",
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                iconTint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                onClick = onRestore,
+                            )
+                            CompactActionIcon(
+                                icon = painterResource(id = android.R.drawable.ic_menu_delete),
+                                contentDescription = "彻底删除",
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                iconTint = MaterialTheme.colorScheme.onErrorContainer,
+                                onClick = onDeletePermanently,
+                            )
+                        }
+                        else -> Unit
+                    }
+                    Spacer(Modifier.weight(1f))
                     if (section != NoteListSection.TRASH) {
                         Box {
                             CompactActionIcon(
@@ -2317,39 +2387,12 @@ private fun NoteCardV2(
                             }
                         }
                     }
-                    // Overflow menu for all other actions
-                    Box {
+                    if (section != NoteListSection.TRASH && (note.status.name == "FAILED" || note.status.name == "LOCAL_ONLY")) {
                         CompactActionIcon(
-                            icon = painterResource(id = android.R.drawable.ic_menu_sort_by_size),
-                            contentDescription = "更多操作",
-                            onClick = { actionOverflowExpanded = true },
+                            icon = painterResource(id = android.R.drawable.ic_menu_rotate),
+                            contentDescription = "重新同步",
+                            onClick = onRetrySync,
                         )
-                        DropdownMenu(expanded = actionOverflowExpanded, onDismissRequest = { actionOverflowExpanded = false }) {
-                            if (section != NoteListSection.TRASH) {
-                                DropdownMenuItem(text = { Text("复制") }, onClick = { onCopy(); actionOverflowExpanded = false })
-                                DropdownMenuItem(text = { Text("编辑") }, onClick = { onEdit(); actionOverflowExpanded = false })
-                                when (section) {
-                                    NoteListSection.INBOX -> {
-                                        DropdownMenuItem(text = { Text("归档") }, onClick = { onArchive(); actionOverflowExpanded = false })
-                                    }
-                                    NoteListSection.ARCHIVE -> {
-                                        DropdownMenuItem(text = { Text("取消归档") }, onClick = { onUnarchive(); actionOverflowExpanded = false })
-                                    }
-                                    else -> Unit
-                                }
-                                DropdownMenuItem(text = { Text("删除") }, onClick = { onDelete(); actionOverflowExpanded = false })
-                            }
-                            when (section) {
-                                NoteListSection.TRASH -> {
-                                    DropdownMenuItem(text = { Text("恢复") }, onClick = { onRestore(); actionOverflowExpanded = false })
-                                    DropdownMenuItem(text = { Text("彻底删除") }, onClick = { onDeletePermanently(); actionOverflowExpanded = false })
-                                }
-                                else -> Unit
-                            }
-                            if (section != NoteListSection.TRASH && (note.status.name == "FAILED" || note.status.name == "LOCAL_ONLY")) {
-                                DropdownMenuItem(text = { Text("重新同步") }, onClick = { onRetrySync(); actionOverflowExpanded = false })
-                            }
-                        }
                     }
                 }
 

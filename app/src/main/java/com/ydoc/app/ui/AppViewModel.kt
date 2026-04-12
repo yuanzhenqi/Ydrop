@@ -507,7 +507,13 @@ class AppViewModel(
             val updated = withContext(Dispatchers.IO) {
                 val existing = container.noteRepository.getNote(editing.noteId) ?: return@withContext null
                 container.noteRepository.saveEditedNote(
-                    existing.copy(content = editing.content.trim(), category = editing.category, priority = editing.priority, tags = editing.tags),
+                    existing.copy(
+                        content = editing.content.trim(),
+                        category = editing.category,
+                        priority = editing.priority,
+                        colorToken = defaultColorFor(editing.category, editing.priority),
+                        tags = editing.tags,
+                    ),
                 )
             }
             if (updated != null) {
