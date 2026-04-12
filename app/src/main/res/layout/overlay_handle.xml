@@ -1,243 +1,240 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/overlayRootRow"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
-    android:gravity="center_vertical">
+    android:gravity="center_vertical"
+    android:clipChildren="false"
+    android:clipToPadding="false">
+
+    <FrameLayout
+        android:id="@+id/overlayRailContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:clipChildren="false"
+        android:clipToPadding="false">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/overlayStripList"
+            android:layout_width="260dp"
+            android:layout_height="420dp"
+            android:visibility="gone"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:overScrollMode="never"
+            android:padding="0dp"
+            android:scrollbars="none"
+            app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+
+        <LinearLayout
+            android:id="@+id/overlayStripEntryBar"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:elevation="12dp"
+            android:clipChildren="false"
+            android:clipToPadding="false" />
+
+        <LinearLayout
+            android:id="@+id/overlayComposerPanel"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="14dp"
+            android:background="@drawable/overlay_panel_bg"
+            android:elevation="8dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:id="@+id/overlayComposerTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="快速记录"
+                    android:textStyle="bold"
+                    android:textSize="15sp"
+                    android:textColor="#18212B" />
+
+                <ImageButton
+                    android:id="@+id/overlayCloseButton"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:src="@android:drawable/ic_menu_close_clear_cancel"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="关闭输入面板" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/overlayTagBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <TextView
+                    android:id="@+id/overlayCategoryNote"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="便签"
+                    android:textSize="12sp"
+                    android:background="@drawable/overlay_tag_bg" />
+
+                <TextView
+                    android:id="@+id/overlayCategoryTodo"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="待办"
+                    android:textSize="12sp"
+                    android:background="@drawable/overlay_tag_bg"
+                    android:layout_marginStart="4dp" />
+
+                <TextView
+                    android:id="@+id/overlayCategoryTask"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="任务"
+                    android:textSize="12sp"
+                    android:background="@drawable/overlay_tag_bg"
+                    android:layout_marginStart="4dp" />
+
+                <TextView
+                    android:id="@+id/overlayCategoryReminder"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="提醒"
+                    android:textSize="12sp"
+                    android:background="@drawable/overlay_tag_bg"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/overlayDraftInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="88dp"
+                android:layout_marginTop="10dp"
+                android:gravity="top"
+                android:hint="输入一些内容..."
+                android:textSize="14sp"
+                android:background="@drawable/overlay_input_bg"
+                android:padding="10dp"
+                android:inputType="textMultiLine"
+                android:maxLines="5"
+                android:imeOptions="flagNoExtractUi|actionDone" />
+
+            <LinearLayout
+                android:id="@+id/overlayPriorityBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <TextView
+                    android:id="@+id/overlayPriorityLow"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="低"
+                    android:textSize="11sp"
+                    android:background="@drawable/overlay_priority_bg"
+                    android:layout_marginEnd="4dp" />
+
+                <TextView
+                    android:id="@+id/overlayPriorityMedium"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="中"
+                    android:textSize="11sp"
+                    android:background="@drawable/overlay_priority_bg"
+                    android:layout_marginEnd="4dp" />
+
+                <TextView
+                    android:id="@+id/overlayPriorityHigh"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="高"
+                    android:textSize="11sp"
+                    android:background="@drawable/overlay_priority_bg"
+                    android:layout_marginEnd="4dp" />
+
+                <TextView
+                    android:id="@+id/overlayPriorityUrgent"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="紧急"
+                    android:textSize="11sp"
+                    android:background="@drawable/overlay_priority_bg" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+
+                <ImageButton
+                    android:id="@+id/overlayRecordButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@android:drawable/ic_btn_speak_now"
+                    android:background="@drawable/overlay_record_btn_bg"
+                    android:scaleType="centerInside"
+                    android:padding="10dp"
+                    android:contentDescription="录音" />
+
+                <TextView
+                    android:id="@+id/overlayRecordingStatus"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="10dp"
+                    android:text="点击发送保存，或开始录音。"
+                    android:textSize="13sp"
+                    android:textColor="#5D6772" />
+
+                <ImageButton
+                    android:id="@+id/overlaySaveButton"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@android:drawable/ic_menu_send"
+                    android:background="@drawable/overlay_btn_primary_bg"
+                    android:scaleType="centerInside"
+                    android:padding="8dp"
+                    android:contentDescription="保存便签" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 
     <View
         android:id="@+id/overlayHandle"
         android:layout_width="24dp"
-        android:layout_height="84dp"
+        android:layout_height="92dp"
         android:background="@drawable/overlay_handle_bg" />
-
-    <LinearLayout
-        android:id="@+id/overlayPanel"
-        android:layout_width="260dp"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="14dp"
-        android:background="@drawable/overlay_panel_bg"
-        android:visibility="gone"
-        android:elevation="8dp">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Ydrop"
-                android:textStyle="bold"
-                android:textSize="15sp"
-                android:textColor="#18212B" />
-
-            <ImageButton
-                android:id="@+id/overlayCloseButton"
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:src="@android:drawable/ic_menu_close_clear_cancel"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="close" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/overlayTagBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:id="@+id/overlayCategoryTodo"
-                android:layout_width="0dp"
-                android:layout_height="28dp"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="待办"
-                android:textSize="12sp"
-                android:background="@drawable/overlay_tag_bg"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp" />
-
-            <TextView
-                android:id="@+id/overlayCategoryTask"
-                android:layout_width="0dp"
-                android:layout_height="28dp"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="任务"
-                android:textSize="12sp"
-                android:background="@drawable/overlay_tag_bg"
-                android:layout_marginStart="4dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp" />
-
-            <TextView
-                android:id="@+id/overlayCategoryReminder"
-                android:layout_width="0dp"
-                android:layout_height="28dp"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="提醒"
-                android:textSize="12sp"
-                android:background="@drawable/overlay_tag_bg"
-                android:layout_marginStart="4dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp" />
-
-            <TextView
-                android:id="@+id/overlayCategoryNote"
-                android:layout_width="0dp"
-                android:layout_height="28dp"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:text="普通"
-                android:textSize="12sp"
-                android:background="@drawable/overlay_tag_bg"
-                android:layout_marginStart="4dp"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp" />
-        </LinearLayout>
-
-        <EditText
-            android:id="@+id/overlayDraftInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:minHeight="72dp"
-            android:gravity="top"
-            android:hint="记点什么..."
-            android:textSize="14sp"
-            android:background="@drawable/overlay_input_bg"
-            android:padding="10dp"
-            android:inputType="textMultiLine"
-            android:maxLines="4"
-            android:imeOptions="flagNoExtractUi|actionDone" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical">
-
-            <ImageButton
-                android:id="@+id/overlayRecordButton"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:src="@android:drawable/ic_btn_speak_now"
-                android:background="@drawable/overlay_btn_bg"
-                android:scaleType="centerInside"
-                android:padding="6dp"
-                android:contentDescription="record" />
-
-            <TextView
-                android:id="@+id/overlayRecordingStatus"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="按住录音"
-                android:textSize="12sp"
-                android:textColor="#6B7280"
-                android:layout_marginStart="8dp" />
-
-            <ImageButton
-                android:id="@+id/overlaySaveButton"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:src="@android:drawable/ic_menu_send"
-                android:background="@drawable/overlay_btn_primary_bg"
-                android:scaleType="centerInside"
-                android:padding="6dp"
-                android:contentDescription="save" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/overlayPriorityBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="6dp"
-            android:visibility="gone">
-
-            <TextView
-                android:id="@+id/overlayPriorityLow"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="24dp"
-                android:gravity="center"
-                android:text="低"
-                android:textSize="11sp"
-                android:background="@drawable/overlay_priority_bg"
-                android:layout_marginEnd="4dp" />
-
-            <TextView
-                android:id="@+id/overlayPriorityMedium"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="24dp"
-                android:gravity="center"
-                android:text="中"
-                android:textSize="11sp"
-                android:background="@drawable/overlay_priority_bg"
-                android:layout_marginEnd="4dp" />
-
-            <TextView
-                android:id="@+id/overlayPriorityHigh"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="24dp"
-                android:gravity="center"
-                android:text="高"
-                android:textSize="11sp"
-                android:background="@drawable/overlay_priority_bg"
-                android:layout_marginEnd="4dp" />
-
-            <TextView
-                android:id="@+id/overlayPriorityUrgent"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="24dp"
-                android:gravity="center"
-                android:text="紧急"
-                android:textSize="11sp"
-                android:background="@drawable/overlay_priority_bg" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/overlayTogglePriority"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="优先级 ▾"
-            android:textSize="11sp"
-            android:textColor="#9CA3AF"
-            android:layout_marginTop="4dp"
-            android:padding="4dp" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#E5E7EB"
-            android:layout_marginTop="8dp"
-            android:layout_marginBottom="6dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="最近"
-            android:textSize="12sp"
-            android:textColor="#9CA3AF"
-            android:layout_marginBottom="4dp" />
-
-        <LinearLayout
-            android:id="@+id/overlayRecentNotes"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </LinearLayout>
 </LinearLayout>

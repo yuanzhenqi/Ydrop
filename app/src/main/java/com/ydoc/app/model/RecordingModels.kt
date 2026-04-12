@@ -2,6 +2,7 @@ package com.ydoc.app.model
 
 enum class RecordingState {
     IDLE,
+    STARTING,
     RECORDING,
     SAVING,
 }

@@ -1,291 +1,415 @@
 # Ydrop 开发走查
 
-## 产品目标
+这份文档面向继续维护这个项目的人，记录当前产品结构、核心模块、数据流和最近几轮已经落地的改动。
 
-Ydrop 是一个以 Android 为主的快速采集 inbox，支持文本记录和语音记录。长期目标如下：
+## 产品定位
 
-- 尽量低摩擦地从手机快速采集内容
-- 按类型和优先级结构化管理笔记
-- 通过 WebDAV 双向同步到 NAS（多端同步）
-- 使用临时中转外链进行云端语音转写
-- 让 OpenClaw 这类后处理工具读取整理后的笔记档案
+Ydrop 是一个 Android 端的快速采集 inbox：
 
-## 当前已工作的主流程
+- 入口足够低摩擦：主界面、悬浮窗、快捷磁贴、桌面快捷录音、专用直录入口。
+- 内容进入同一个 inbox：文本、语音、AI 建议、提醒。
+- 最终通过 WebDAV 双向同步到 NAS。
 
-### 1. 文本记录流程
+## 当前整体架构
 
-- 用户在 `快速记录` 卡片中输入内容
-- 用户选择笔记类型和优先级
-- 笔记立刻保存到 Room
-- 如果开启了 WebDAV 自动同步，笔记会立即上传到 NAS
+### App 内主要模块
 
-### 2. 语音记录流程
+- `ui/`
+  - Compose 主界面
+  - 设置页
+  - 日历 / agenda 视图
+- `overlay/`
+  - 悬浮窗侧边轨
+  - 输入卡、编辑卡、最近卡片
+- `recording/`
+  - 录音
+  - 本地导出
+  - 本地播放
+- `transcription/`
+  - relay + 转写编排
+  - 转写重试
+- `sync/`
+  - WebDAV 双向同步
+  - 定时同步
+- `ai/`
+  - AI provider / relay 接入
+  - 建议生成
+- `reminder/`
+  - AlarmManager 调度
+  - 到点通知
+  - 开机重挂
+- `quickrecord/`
+  - 专用直录入口
+  - 动态快捷方式 / 桌面快捷方式
 
-- 用户在首页开始录音
-- 录音通过前台服务保持稳定运行
-- 音频保存为本地 `.m4a`
-- 在 Room 中创建一条语音 note
-- 如果启用了 relay，中转服务会先接收音频文件并返回临时公网 URL
-- 如果启用了火山/豆包转写，应用会把该 URL 提交给豆包 ASR，并轮询结果
-- 转写成功后会把 transcript 回写到同一条 note
-- 更新后的 note 再同步到 NAS
+### 服务端
 
-### 3. WebDAV 双向同步流程
+- `relay_service/`
+  - 临时音频上传
+  - 健康检查
+  - AI 分析接口 `/ai/analyze-note`
 
-- 手动点击同步按钮或通过定期同步（15 分钟周期）触发双向同步
-- 从 WebDAV 列出所有 `.md` 文件，逐个下载并解析 YAML frontmatter 中的 `id`
-- 通过 `id` 与本地笔记匹配（不依赖文件名），判断增删改：
-  - 远端有、本地无 → 拉取创建本地记录
-  - 本地有、远端无 → 推送到远端
-  - 两端都有 → 按 `updatedAt` 时间戳比较，Last-Write-Wins
-- 本地已删除的笔记通过 tombstone 机制防止从远端拉回
-- 推送时使用 `id` 匹配，覆盖已有的远端文件（而非创建新文件）
+## 核心数据模型
 
-### 4. 悬浮窗快速捕捉流程
+### Note
 
-- 悬浮把手作为前台常驻服务运行
-- 点击把手展开面板，支持文字输入、分类优先级选择、长按录音
-- 点击面板外任意区域收起面板
-- 把手支持左右两侧停靠，拖拽时自动吸附到屏幕边缘
-- 展开面板时显示最近 5 条记录
-
-## 已完成的主要里程碑
-
-### 里程碑 1：项目骨架
-
-- 建立 Android 项目基础结构，使用 Jetpack Compose、Room 和 OkHttp
-- 加入主题、图标资源和构建配置
-
-### 里程碑 2：本地 inbox + WebDAV
-
-- 实现本地笔记存储
-- 增加 WebDAV 设置和连接测试
-- 增加手动同步与即时同步触发逻辑
-- 增强同步错误提示
-
-### 里程碑 3：结构化笔记
-
-- 增加笔记类型：`NOTE`、`TODO`、`TASK`、`REMINDER`
-- 增加优先级：`LOW`、`MEDIUM`、`HIGH`、`URGENT`
-- 增加颜色 token 以支持不同类型卡片视觉区分
-- 增加同步时间和同步错误记录
-
-### 里程碑 4：语音记录
-
-- 增加麦克风权限申请
-- 增加前台录音服务
-- 让语音记录也进入同一个 inbox
-- 支持把音频文件同步到 WebDAV 的 `audio/` 目录
-
-### 里程碑 5：笔记管理
-
-- 增加已保存笔记的编辑流程
-- 增加本地删除流程
-- 增加失败或待同步记录的重试同步
-- 删除笔记时支持同时删除 NAS 上的远端文件
-
-### 里程碑 6：中转服务接入
-
-- 在 `relay_service/` 下实现独立 FastAPI 中转服务
-- 在 Android App 中增加 relay 配置
-- 语音录音后可上传到 relay
-- relay 返回的临时 URL 和 file id 会保存到 note 中
-
-### 里程碑 7：豆包 / 火山语音转写接入
-
-- 在 Android App 中增加 Volcengine 配置项
-- 增加录音文件识别 API 的 submit/query 客户端
-- 用真实 submit/query 流程验证了 API 凭据可用
-- 根据文档修正了请求体，补上必要字段：
-  - `audio.format`
-  - `request.model_name = bigmodel`
-  - `request.enable_itn = true`
-- 修复了客户端以前从 relay URL 猜音频格式的问题，改成使用真实录音格式
-
-### 里程碑 8：悬浮窗 + 快速入口
-
-- 实现 `OverlayHandleService` 悬浮把手服务
-- 支持拖拽、展开/收起面板、文字输入、长按录音
-- 支持 Quick Settings Tile 快速录音入口
-- 支持左右两侧停靠和吸附
-
-### 里程碑 9：WorkManager 转写重试
-
-- 实现 `TranscriptionRetryWorker` 和 `TranscriptionScheduler`
-- 同步转写失败时自动进入 WorkManager 重试队列
-- 支持网络约束和指数退避
-
-### 里程碑 10：悬浮窗稳定性修复
-
-- 将 `OverlayHandleService` 从普通服务改为前台服务（Foreground Service）
-  - 添加 `FOREGROUND_SERVICE_SPECIAL_USE` 权限
-  - Manifest 声明 `foregroundServiceType="specialUse"`
-  - `onCreate()` 调用 `startForeground()` + 创建通知渠道
-  - 常驻通知"Ydrop 悬浮助手运行中"，点击回到主界面
-- 修复悬浮面板收起交互：添加 `FLAG_WATCH_OUTSIDE_TOUCH`，点击面板外任意位置收起
-- 修复悬浮把手两侧停靠：`rootView` 改为 `FrameLayout` 包裹，根据 `dockSide` 动态调整 handle/panel 顺序
-- **重构悬浮窗 UI**：分层设计，把手→输入层→录音层→最近记录；新增 drawable 资源（handle/panel/input/tag/btn 背景）
-- **Bug 修复：MainActivity 添加 `singleTop` 启动模式**，确保从悬浮窗或桌面启动都复用同一 Activity 实例
-
-### 里程碑 11：WebDAV 双向同步
-
-- 数据模型变更：
-  - `NoteEntity`/`Note` 新增 `remotePath`、`lastPulledAt` 字段
-  - 新增 `TombstoneEntity` + `TombstoneDao`，记录已删除笔记 ID 防止拉回
-  - Room 数据库版本 6→8，包含两个 Migration
-- `SyncClient` 接口扩展：新增 `listRemote()`、`pull()`、`deleteByPath()`
-- `WebDavSyncClient` 实现：
-  - `PROPFIND Depth:1` 列出远端 `.md` 文件（兼容不同 DAV 命名空间）
-  - `GET` 下载远端 Markdown 内容
-  - `DELETE` 按路径删除远端文件
-- `MarkdownFormatter` 新增 `extractId()` 和 `parseFromMarkdown()`：
-  - 从 YAML frontmatter 提取 `id`、`createdAt`、`updatedAt`、`category`、`priority`、`source`
-  - 反向解析 Markdown 内容重建 Note 对象
-- **文件名只用 `{id}.md`**，不再包含标题、分类等动态内容，编辑笔记后文件名不变，彻底消除匹配失败问题
-- `SyncOrchestrator.syncBidirectional()` 核心逻辑：
-  - **通过 `id` 匹配**（而非文件路径），先下载所有远端 `.md` 文件解析 frontmatter 中的 `id`
-  - 按 `id` 与本地笔记对比：本地有远端无→推送，远端有本地无→拉取，两端都有→Last-Write-Wins
-  - tombstone 机制：本地已删除的笔记不会从远端拉回，且同步时删除远端对应文件
-  - 拉取时保留 `remotePath` 确保后续同步能匹配
-- `SyncScheduler` 新增 `enqueuePeriodicSync()`：15 分钟周期自动双向同步
-- `SyncWorker` 改为先尝试双向同步，失败时降级为单向推送
-- `AppViewModel.syncNow()` 改为调用双向同步，显示推送/拉取条数
-- `AppViewModel.saveSettings()` 保存时根据配置启动/取消定期同步
-- **Bug 修复：编辑笔记后推送时先删除远端旧文件再创建新文件**（解决标题变更导致文件名变化、生成重复文件的问题）
-- **Bug 修复：双向同步拉取时正确保留 `remotePath`**，确保后续推送能匹配到远端文件
-- **Bug 修复：WebDAV PROPFIND XML 解析取最后一个 href**（修复多 href 场景下文件名解析错误）
-- **Bug 修复：NAS 编辑文件后 frontmatter `updatedAt` 不变导致无法拉取** — 改用 HTTP `Last-Modified` 头 + 内容差异比较
-- **Bug 修复：`extractBody()` 解析时跳过 `#` 标题、`>` meta 行、`**AI`/`**原始内容` 标记**，避免属性文本混入笔记内容
-- **Bug 修复：`upsertFromRemote()` 保留本地 `audioPath` 等字段**
-- **Bug 修复：编辑笔记后推送前先删除远端旧文件**（文件名因标题变更而变化时不再生成重复文件）
-- **语音记录编辑后 `source=VOICE` 保持不变**，不再生成新的文字记录
-- **语音记录 NoteCard 去掉重复的 transcript 显示**，改为 bodyText + 展开按钮统一处理
-- **语音记录编辑后优先显示 content（用户编辑内容）**，不再优先显示 transcript
-- **文件名分类改为用 source（语音/文字）**，编辑 category 不影响文件名，语音文件名始终显示"语音"
-- **设置页新增同步间隔选择**，支持 5/15/30/60 分钟
-- **NoteCard 展开按钮改用 `onTextLayout.hasVisualOverflow` 检测**，不再用字符长度判断，多换行短文本也能正确显示展开按钮
-- 主界面已有"立即同步"按钮（`syncNow()`），点击触发双向同步
-- 定期同步每 15 分钟自动执行一次双向同步
-- 添加详细日志（`adb logcat -s SyncOrchestrator` 可查看同步过程）
-
-## 重要运行说明
-
-### Relay 鉴权
-
-- 当前部署的 relay 使用：
-  - `Authorization: Bearer <token>`
-- App 已对齐这个鉴权方式
-
-### Relay 健康检查路径
-
-- 当前部署的 relay 健康检查接口是：
-  - `/healthz`
-- App 已改为检查 `/healthz`，不再使用 `/health`
-
-### 豆包 ASR 的前提
-
-- 录音文件识别标准版 API 不接受手机本地文件直传
-- 它需要一个公开可访问的 `audio.url`
-- 这就是 relay 存在的原因
-
-- 同步文件名改为 `{id}.md`，不再包含标题/分类等动态内容
-
-- 文件名就是 id，不再包含标题分类信息，不再随内容变化而变化
-
-- App 之前错误地把 MPEG-4/AAC 音频标记成了 `wav`
-- 这会导致转写卡住或超时
-- 现在已经改成记录 `.m4a` 文件，并向豆包提交 `mp4` 格式
-
-### 悬浮窗前台服务
-
-- `OverlayHandleService` 使用 `FOREGROUND_SERVICE_SPECIAL_USE` 前台服务类型
-- 需要 Android 14+ 支持
-- 通知渠道 ID 为 `ydoc_overlay_channel`，通知 ID 为 `2001`
-
-### 双向同步的 ID 匹配机制
-
-- 同步匹配完全依赖 Markdown frontmatter 中的 `id` 字段，不依赖文件名
-- 这意味着在 NAS 上重命名文件不会影响同步
-- 在 NAS 上修改文件内容后，手机端同步会通过 `id` 找到对应本地笔记并更新
-- 编辑本地笔记后推送，会覆盖远端已有文件（通过 `id` 匹配），不会创建重复文件
-
-## 为中转和转写新增的文件
-
-### Android 端
-
-- `app/src/main/java/com/ydoc/app/relay/RelayStorageClient.kt`
-- `app/src/main/java/com/ydoc/app/relay/SelfHostedRelayClient.kt`
-- `app/src/main/java/com/ydoc/app/transcription/VolcengineTranscriptionClient.kt`
-- `app/src/main/java/com/ydoc/app/transcription/TranscriptionOrchestrator.kt`
-- `app/src/main/java/com/ydoc/app/data/SettingsStore.kt`
-
-### Relay 服务端
-
-- `relay_service/app/main.py`
-- `relay_service/app/storage.py`
-- `relay_service/app/auth.py`
-- `relay_service/app/config.py`
-- `relay_service/app/models.py`
-- `relay_service/app/cleanup.py`
-
-### 双向同步新增文件
-
-- `app/src/main/java/com/ydoc/app/data/local/TombstoneEntity.kt`
-- `app/src/main/java/com/ydoc/app/data/local/TombstoneDao.kt`
-
-## 当前已知状态
-
-已经就位的能力：
+当前 `Note` 仍然是产品核心对象，承担：
 
 - 文本记录
 - 语音记录
-- WebDAV 双向同步（基于 ID 匹配的 Last-Write-Wins）
-- relay 上传
-- Volcengine 配置界面
-- relay / Volcengine 配置持久化
-- 笔记编辑 / 删除 / 重试同步
-- 悬浮窗前台常驻服务（左右停靠、点击任意位置收起）
-- Quick Settings Tile 快速录音
-- WorkManager 转写重试
-- 定期双向同步（15 分钟周期）
-- tombstone 防止已删除笔记从远端拉回
+- 分类
+- 优先级
+- 归档 / 回收站状态
+- 转写状态
+- 远端同步状态
+- 本地音频路径
 
-仍需继续验证的部分：
+重要说明：
+- AI 建议不直接写进 note。
+- 提醒也不直接挂在 note 表里。
 
-- 手机上使用 relay URL 进行语音 note 的完整转写闭环
-- 双向同步在真实 NAS 环境下的完整验证
-- 悬浮窗在各类 ROM 上的长期稳定性
+### AiSuggestion
 
-### 里程碑 12：核心链路稳定性修复
+AI 第一阶段是非破坏式建议流，单独存储：
 
-- **悬浮窗同步 Bug 修复：** 悬浮窗创建文本笔记和语音笔记后，现在会正确触发 `syncBidirectional()` 双向同步（之前悬浮窗创建的笔记不会自动同步到 NAS）
-- **App 启动自动同步：** `AppViewModel` 初始化时自动检查 WebDAV 设置，如果启用了自动同步则立即执行一次双向同步
-- **Relay 临时文件自动清理：** 转写成功、失败、提交异常三种情况下都会自动调用 `relayStorageClient.delete()` 清理 relay 上的临时音频文件
-- **转写轮询超时延长：** 从 12×3s=36s 增加到 20×3s=60s，避免较长音频转写超时
-- **转写提交失败状态修复：** 提交转写请求失败时正确标记为 FAILED（之前会卡在 TRANSCRIBING 状态）
-- **TranscriptionRetryWorker 传递 relayConfig：** 重试转写时也会正确传递 relay 配置，确保重试成功后也能清理临时文件
+- `summary`
+- `suggestedTitle`
+- `suggestedCategory`
+- `suggestedPriority`
+- `todoItems`
+- `extractedEntities`
+- `reminderCandidates`
+- `status`
 
-## 目前剩余的主要待办
+状态包含：
+- `RUNNING`
+- `READY`
+- `FAILED`
+- `APPLIED`
+- `DISMISSED`
 
-### 最高优先级
+### ReminderEntry
 
-- 在真实手机上完整验证双向同步：NAS 修改→手机拉取、手机修改→NAS 推送
-- 让 Volcengine 轮询状态在 UI 中展示更清晰的进度和结果
+提醒单独建模，不和 note 结构硬绑定：
 
-### 中优先级
+- `noteId`
+- `title`
+- `scheduledAt`
+- `source`
+- `status`
+- `deliveryTargets`
 
-- 改进同步历史和重试可见性
-- 在卡片中展示更丰富的转写状态，而不只是泛化错误
+当前第一阶段只支持单次提醒，不支持重复规则。
 
-### 产品 / 体验优先级
+## 关键链路
 
-- 增加桌面小组件
-- 继续打磨首页和设置页的布局与视觉层次
-- 悬浮窗面板展示更丰富的笔记信息
+### 1. 文本记录
 
-### 更长期的方向
+1. 用户在主界面快速记录卡或悬浮窗输入卡输入内容
+2. 保存到 Room
+3. 如开启 WebDAV 自动同步，则立即推送
+4. 如开启 AI 自动整理，则进入 AI 建议流程
 
-- 评估目标设备 / ROM 是否能支持双击电源键联动
-- 增加更安全的密钥存储（Keystore / 加密存储）
-- 评估本地 Whisper 作为离线 fallback 方案
-- 双向同步增加离线冲突队列，替代简单的 Last-Write-Wins
+### 2. 语音记录
+
+1. 主界面或悬浮窗开始录音
+2. 录音文件保存到 App 私有目录
+3. 同时导出一份系统可见副本
+4. 创建 voice note
+5. 如启用 relay + 转写，则进入上传和转写链路
+6. 转写结果回写到 note
+7. 如开启 WebDAV 自动同步，则推送到 NAS
+8. 如开启 AI 自动整理，则在转写后生成建议
+
+### 3. AI 整理
+
+1. App 构造 `AiAnalyzeRequest`
+2. 根据 AI 模式走不同协议：
+   - `RELAY`
+   - `OPENAI`
+   - `ANTHROPIC`
+   - `AUTO`
+3. 返回结构化 `AiAnalyzeResponse`
+4. 保存到本地 `AiSuggestion`
+5. UI 展示建议区
+6. 用户决定应用或忽略
+
+### 4. 提醒
+
+1. 用户手动创建，或从 AI 候选时间创建
+2. 落本地 `ReminderEntry`
+3. `ReminderScheduler` 调用 AlarmManager
+4. 到点后 `ReminderReceiver` 发本机通知
+5. 也可以一键导出到系统闹钟
+
+### 5. WebDAV 双向同步
+
+1. `SyncOrchestrator` 统一调度
+2. `WebDavSyncClient` 扫描：
+   - `inbox/`
+   - `archive/`
+3. 同步匹配依赖 frontmatter 的 `id`
+4. 规则：
+   - 活跃 note -> `inbox/`
+   - 归档 note -> `archive/`
+   - 回收站 note -> 远端删除
+5. tombstone 防止被远端重新拉回
+
+## AI 配置现状
+
+### 当前支持的模式
+
+- `AUTO`
+- `RELAY`
+- `OPENAI`
+- `ANTHROPIC`
+
+### 使用语义
+
+- `RELAY`
+  - Base URL 指向 Ydrop relay
+  - 使用 `/healthz` 和 `/ai/analyze-note`
+
+- `OPENAI`
+  - Base URL 指向模型网关根地址
+  - 使用 `/v1/chat/completions`
+
+- `ANTHROPIC`
+  - Base URL 指向模型网关根地址
+  - 使用 `/v1/messages`
+
+- `AUTO`
+  - 优先尝试把当前地址识别为 provider
+  - 识别失败时回退为 relay
+
+### 为什么最近要补这一层
+
+因为实践里用户会直接把模型网关地址填到 App 设置里，而原先 App 只支持 relay 语义：
+
+- 测试连接时请求 `/healthz`
+- 真正整理时请求 `/ai/analyze-note`
+
+如果用户填的是网关地址，就会拿到 `200 + HTML`，被误判成“连接成功”，整理时再在 JSON 解析阶段炸掉。
+
+现在已经修成：
+
+- 测试连接不再只看 HTTP 200
+- 会判断是不是网页而不是 JSON 接口
+- OpenAI 和 Anthropic 两种返回都能解析
+- 对把 JSON 包在 ```json fenced block``` 里的返回做了兼容
+
+## 悬浮窗现状
+
+### 当前结构
+
+- 单窗口 overlay root
+- 折叠态只显示把手
+- 展开态为侧边滚动轨
+- 第一张是输入卡
+- 后面是最近 note 卡片
+
+### 当前交互
+
+- 输入卡点击：文字输入
+- 输入卡长按：按住录音，松手结束
+- note 卡左右滑：
+  - 右滑归档
+  - 左滑回收站
+- note 卡底部快捷图标按类型变化
+
+### 目前已经收过的关键 bug
+
+- 悬浮窗卡片与原面板重叠
+- 输入法遮挡
+- 输入卡长按录音约 1 秒自动取消
+- 录音结束后错误收起整个悬浮窗
+- 红色录音键长按无效
+
+当前语义：
+- 输入卡长按录音结束后保持侧边轨展开
+- 新语音卡应立刻出现在最近列表中
+
+## 主界面现状
+
+### 已落地
+
+- 折叠式快速记录卡
+- 双分组胶囊：
+  - 类型
+  - 优先级
+- note 卡图标化动作区
+- 语音 note 单卡播放器
+- 语音标题 UI 层隐藏底层 id
+- 日历 / agenda 入口
+- AI 建议区
+
+## 快捷启动现状
+
+### 已提供的入口
+
+- Quick Settings Tile
+- 动态快捷方式 `快速录音`
+- 桌面固定快捷录音
+- `QuickRecordEntryActivity`
+
+### 当前目标
+
+不做私有 OEM SDK 适配，但提供一个稳定的官方直录入口，方便用户把它绑定到系统支持的快捷启动路径。
+
+## 最近几轮主要里程碑
+
+### 里程碑 A：归档 / 回收站闭环
+
+- 数据层补齐归档与回收站字段
+- 主界面加入收件箱 / 归档 / 回收站
+- 悬浮窗左右滑归档与回收站
+- 回收站同步语义改为远端删除
+
+### 里程碑 B：NAS 目录语义完善
+
+- 活跃 note 到 `inbox/`
+- 归档 note 到 `archive/`
+- 回收站远端删除
+- `archived` 状态进入 frontmatter
+
+### 里程碑 C：悬浮窗侧边轨重构
+
+- 从多 overlay 冲突结构改成单窗口侧边轨
+- 输入卡 + 多类型卡片
+- 列表级 swipe
+- 悬浮窗编辑卡
+
+### 里程碑 D：本地音频双份保存与播放
+
+- 录音先保存私有副本
+- 再导出一份系统可见副本
+- 主界面和悬浮窗都支持播放
+
+### 里程碑 E：AI / 提醒 / 直录入口底座
+
+- `AiSuggestion` 本地表
+- `ReminderEntry` 本地表
+- agenda 视图
+- AlarmManager 通知调度
+- relay `/ai/analyze-note`
+- 动态快捷录音 / 桌面快捷录音 / 专用直录入口
+
+### 里程碑 F：AI provider 兼容层
+
+- App 直接支持 `Relay / OpenAI / Anthropic / Auto`
+- 避免把 provider 地址误当 relay 地址
+- 兼容 HTML 错配和 fenced JSON 返回
+
+## 当前验证状态
+
+已经验证过的：
+
+- Android `assembleDebug`
+- relay 新增 Python 文件语法检查
+- 模拟器可安装、可启动
+- 主界面录音和播放基本可用
+- AI provider 直连逻辑已用真实网关 URL 做过请求验证
+
+仍建议继续真机重点回归的：
+
+- 悬浮窗长按录音在不同 ROM 下的稳定性
+- AI 建议的真实效果与不同模型兼容性
+- 提醒通知在不同系统电池策略下的准时性
+- WebDAV 双向同步在真实 NAS 环境下的完整一致性
+
+## 下一阶段最值得做的事
+
+### P0
+
+- AI 问答二期：基于 note 的问答，而不是只做建议
+- 自定义提醒时间选择器
+- 悬浮窗真机交互回归与边缘稳定性
+
+### P1
+
+- 提醒重复规则
+- 更细的 AI 应用粒度
+- 更完整的快捷启动机型指引
+
+### P2
+
+- 飞书 / 聊天软件外发提醒
+- 离线 ASR fallback
+- 更完整的自动化测试链路
+
+## 里程碑 G：tags 系统 + 快速记录栏底部固定 + AI 时间提取优化
+
+> 分支 `claude/1.2.0`，未提交 WIP，基于 `e73c6ff`
+> 改动 15 文件，+397 -86 行
+
+### 本轮目标
+
+1. Note 支持用户自定义标签，在主界面卡片上显示
+2. 快速记录栏（主界面 + 悬浮窗）在侧边栏拉开时固定在屏幕底部居中
+3. AI 整理提取提醒时间不准（中文相对时间解析错误）
+
+### 涉及模块
+
+#### data — tags 存储层
+
+- `Note.kt` 新增 `tags: List<String>` 字段
+- `NoteEntity.kt` 新增 `tagsJson: String?` 列（JSON 序列化）
+- `YDocDatabase` Migration 13→14，`ALTER TABLE notes ADD COLUMN tagsJson TEXT`
+- `Mappers.kt` 双向转换 tags ↔ tagsJson
+- `MarkdownFormatter` frontmatter 增加 `tags:` 行，导入时解析回 `List<String>`
+- `NoteRepository.createTextNote()` 接受 tags 参数；`savePulledNote()` 保留远端 tags
+- `AppContainer` AI 专用 OkHttpClient，独立超时（connect 15s / read 90s / call 120s），防止 provider 挂起卡死 AiSuggestion
+
+#### ui — 主界面改动
+
+- `CaptureDraft` / `EditDraft` 增加 `tags` 字段
+- `HeroCaptureCard` 从 LazyColumn 首个 item 移到外层 Box 底部固定（`Modifier.align(BottomCenter)`）
+- `EditNoteCard` 增加标签输入框（逗号分隔）
+- `NoteCardV2` 用 `FlowRow` 显示 `#tag` 芯片
+- `NoteCardV2` 操作区增加"复制内容"按钮（`onCopyNote`）
+- 日历 agenda 视图增加「新增日程」按钮 + `CreateReminderDialog`（选日期、时、分）
+- `AppViewModel` 新增 `updateDraftTags` / `updateEditingTags` / `copyNoteContent` / `createReminderForDate`
+
+#### overlay — 悬浮窗快速记录栏
+
+- `overlay_handle.xml` 新增 `overlayStripEntryBar`（FrameLayout 子 View，`layout_gravity=bottom|center_horizontal`）
+- `OverlayHandleService`：strip 展开时 ComposerEntryView 渲染到 `stripEntryBar` 而非 RecyclerView
+- RecyclerView 底部 padding 从 4dp 改为 92dp，给底部浮层留空间
+- `OverlayStripAdapter`：`OverlayComposerPressView` 改为 internal，供 HandleService 直接访问
+- strip 编辑卡 overlay 也同步支持 tags
+
+#### ai — 时间提取 prompt 优化
+
+- `RelayAiClient.buildSystemPrompt()` 新增 TIME RESOLUTION RULES 段：
+  - 中文相对时间映射表（明天/后天/大后天/下周一/上午/下午/晚上/凌晨）
+  - 明确要求从 `currentTimeEpochMs` 算出绝对 epoch ms
+  - 强调输出前要 double-check 算术
+- `defaultAiPromptTemplate()` 补充中文时间表达识别指导
+
+### 关键决策
+
+- tags 用 `tagsJson`（JSON 字符串）存在 Room 而非关联表——tag 数量少、不需要按 tag 查询，简单够用
+- 主界面 HeroCaptureCard 用 Box 叠加而非 bottomBar，避免干扰 Scaffold 布局
+- 悬浮窗快速记录栏用独立 LinearLayout 浮层，脱离 RecyclerView 滚动
+- AI 时间 prompt 用显式映射表而不是让模型自己推算中文时间，降低出错率
+
+### 遗留 / 待办
+
+- 标签输入目前是逗号分隔文本框，后续可改为 chip 输入 + 自动补全
+- 悬浮窗 stripEntryBar 需要真机验证不同屏幕尺寸的适配
+- AI 时间提取优化需要用真实中文时间表达做端到端验证
+- tags 尚未接入 AI 建议流程（AI 不会建议标签）
+
+### 手动回归清单
+
+- [ ] 悬浮窗 strip 展开，快速记录栏是否显示在底部居中
+- [ ] 悬浮窗 strip 展开后长按快速记录栏录音，是否能正常触发
+- [ ] 主界面快速记录栏是否固定在底部，不随列表滚动
+- [ ] 主界面新建便签时填写标签，保存后 NoteCard 上是否显示 #tag
+- [ ] 编辑已有便签时修改标签，保存后标签是否正确更新
+- [ ] WebDAV 同步后远端 markdown 文件 frontmatter 是否包含 tags 行
+- [ ] 从 NAS 拉取带 tags 的 markdown 文件，本地是否正确还原标签
+- [ ] Room Migration 13→14 在已安装 App 上是否成功执行
+- [ ] AI 分析包含"明天上午 X 点"类时间表达的便签，提醒时间是否准确
+- [ ] 日历 agenda 视图「新增日程」弹窗创建提醒是否正常
+- [ ] NoteCard 复制内容按钮是否将文本复制到系统剪贴板

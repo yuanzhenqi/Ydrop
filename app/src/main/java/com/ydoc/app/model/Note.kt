@@ -4,6 +4,7 @@ data class Note(
     val id: String,
     val title: String,
     val content: String,
+    val originalContent: String? = null,
     val source: NoteSource,
     val category: NoteCategory,
     val priority: NotePriority,
@@ -14,6 +15,7 @@ data class Note(
     val lastSyncedAt: Long?,
     val audioPath: String?,
     val audioFormat: String?,
+    val audioPublicUri: String? = null,
     val relayFileId: String?,
     val relayUrl: String?,
     val relayExpiresAt: Long?,
@@ -26,6 +28,11 @@ data class Note(
     val pinned: Boolean,
     val remotePath: String? = null,
     val lastPulledAt: Long? = null,
+    val isArchived: Boolean = false,
+    val archivedAt: Long? = null,
+    val isTrashed: Boolean = false,
+    val trashedAt: Long? = null,
+    val tags: List<String> = emptyList(),
 )
 
 enum class NoteSource {

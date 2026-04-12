@@ -1,89 +1,140 @@
-# Ydrop
+# Ydrop — AI 闪念胶囊
 
-**把语音、文字快速收进来，再用 AI 自动整理成行动信息的个人助手。**
+> 把脑子里冒出的碎片一秒钟丢进来，AI 帮你整理成待办、提醒和笔记。
 
-**你负责随手丢，Ydrop 负责转写、归类、同步。**
+Ydrop 是一个 Android 端的个人快速采集 inbox，集 **随手记 · AI 整理 · 待办提取 · 语音转写 · 提醒日历 · WebDAV 同步** 于一体。文字、语音、悬浮窗速记、桌面快捷录音——所有入口汇进同一个收件箱，再由 AI 把碎片变成可执行内容。
 
-## 它在解决什么问题
+**关键词**：`AI 整理` · `待办提取` · `随手记` · `闪念胶囊` · `语音转写` · `悬浮窗速记` · `提醒日历` · `WebDAV 同步`
 
-灵感、待办、语音备忘散落在不同地方，最后不是忘了就是找不到。
+---
 
-Ydrop 想做的是一条完整链路：从闪念采集，到 AI 转写理解，再到 NAS 多端同步，让碎片信息逐步变成可执行的信息。
+## 核心功能
 
-## 已经能做什么
+### 闪念速记
+- 主界面底部常驻快速记录栏，点击即写、长按即录
+- 悬浮窗侧边轨：任意 App 上方一键呼出，支持文字输入和长按录音
+- Quick Settings Tile / 桌面快捷方式 / 动态 App Shortcut / 专用直录入口，多种系统级快捷启动
+- 支持 `Note / Todo / Task / Reminder` 四种类型和优先级标记
+- 标签系统：自定义 tag，筛选、同步全打通
 
-### 快速采集
+### AI 智能整理
+- 文本保存后 / 语音转写完成后自动触发 AI 整理
+- AI 输出为"建议"，不直接改写原始内容，用户一键采纳或忽略
+- 支持能力：
+  - 摘要生成、标题建议
+  - 智能分类、优先级建议
+  - **待办提取**（从自然语言中抽取 todo）
+  - **信息实体提取**（人名、地点、时间等）
+  - **提醒候选时间**（支持中文时间表达："明天上午 10 点"、"下周三"）
+- 四种接入模式：`AUTO / RELAY / OPENAI / ANTHROPIC`，兼容主流模型网关
 
-- **语音记录并自动转文字**：录完后自动走 relay + 豆包转写链路，保留原始录音
-- **文字快速记录**：像原生闪念一样随手记下想法
-- **悬浮窗快速捕捉**：屏幕边缘常驻悬浮把手，随时展开记录文字或长按录音
-- **Quick Settings Tile**：下拉通知栏一键开始录音
-- **支持类型和优先级管理**：待办、任务、提醒、普通，低/中/高/紧急，一眼区分
+### 语音记录与转写
+- 前台服务稳定录音，App 私有目录保存 + 系统可见目录导出
+- 主界面 & 悬浮窗均可播放，单卡进度条 + 拖动 seek
+- 录音完成自动上传转写，转写完成自动触发 AI 整理
+
+### 提醒与日历
+- 本地提醒模型，AlarmManager 驱动的通知提醒
+- 日历 Agenda 视图，按日查看提醒与关联笔记
+- 开机自动重挂未到期提醒
+- 一键导出到系统闹钟
+- 从笔记卡片快捷创建提醒，或从 AI 建议一键生成
 
 ### WebDAV 双向同步
-
-- **手机 → NAS**：新记录自动推送到 WebDAV
-- **NAS → 手机**：在 NAS 上编辑 Markdown 文件，手机端点击同步即可拉取更新
-- **多端同步**：通过 `id` 匹配（非文件名），编辑标题/分类不影响同步
-- **Last-Write-Wins**：按时间戳自动解决冲突
-- **删除同步**：本地删除的笔记自动从 NAS 上移除（tombstone 机制）
-- **可配置同步间隔**：5 / 15 / 30 / 60 分钟自动同步
+- 本地 → NAS 自动同步，NAS → 本地定时双向拉取
+- 按 note id 匹配，活跃笔记 `inbox/`、归档 `archive/`、音频 `inbox/audio/`
+- Markdown 格式存储，frontmatter 保留分类、优先级、标签等元数据
+- 回收站语义：本地可恢复，远端删除
 
 ### 记录管理
+- 收件箱 / 归档 / 回收站三分区
+- 卡片展开后直接展示操作按钮：AI 整理、复制、编辑、归档、删除
+- 左右滑动卡片快速归档 / 删除（与悬浮窗操作一致）
+- 悬浮窗卡片同样支持类型色、快捷动作、滑动归档/回收站
 
-- **可编辑、删除、重新同步**：记录不是一次性输入，后续还能持续整理
-- **语音记录编辑后保留语音属性**：编辑内容不改变记录来源
-- **展开/收起全文**：长内容笔记自动检测截断，显示展开按钮
+---
 
-### 可读的 Markdown 文件
+## 技术栈
 
-NAS 上的文件名包含时间、来源和标题信息，方便浏览：
+| 层面 | 技术 |
+|------|------|
+| 语言 | Kotlin |
+| UI | Jetpack Compose + Material3 |
+| 本地存储 | Room + DataStore |
+| 异步 | Coroutines + Flow |
+| 后台任务 | WorkManager |
+| 网络 | OkHttp + kotlinx.serialization |
+| 同步 | 自研 WebDAV 双向同步 |
+| 后端 | FastAPI relay service（AI 分析 & 转写中转） |
+| SDK | minSdk 26 · targetSdk 35 · JVM 17 |
 
-```
-2026-03-30_14-35_语音_语音记录_a1b2c3.md
-2026-03-30_15-20_文字_关于项目计划的思考_d4e5f6.md
-```
-
-每个文件包含 YAML frontmatter（`id`、`createdAt`、`updatedAt`、`source`、`category`、`priority`）和正文。
-
-## 技术结构
-
-- **Android / Jetpack Compose** — UI 层
-- **Room** — 本地存储，数据库版本迁移
-- **WebDAV** — 双向同步（PROPFIND / GET / PUT / DELETE）
-- **WorkManager** — 定期同步、转写重试
-- **Foreground Service** — 悬浮窗常驻 + 录音前台服务
-- **Relay 中转服务** — 临时音频上传，生成公网 URL
-- **豆包 / 火山引擎** — 语音转文字
-
-## 正在推进
-
-- **相似记录自动归并整理** — 相同标题、相近内容自动整合
-- **时间与地点线索深挖** — 提取时间、地点、人物，自动生成日程候选
-- **提醒系统** — Ydrop 内提醒 + 外部推送
-- **截图与链接理解** — 截图和网页链接也能进入整理链路
-- **桌面小组件** — 首屏快速记录入口
-- **本地 Whisper 离线转写** — 无网络时也能转写
+---
 
 ## 仓库结构
 
+```text
+app/src/main/java/com/ydoc/app/
+  ai/               # AI provider / relay 接入、建议生成编排
+  config/           # 运行时配置
+  data/             # Repository、Settings、Markdown 序列化
+  logging/          # 日志工具
+  model/            # Note / Reminder / AI / Playback 数据模型
+  overlay/          # 悬浮窗服务、侧边轨、输入/编辑卡
+  quickrecord/      # 专用直录入口、动态 App Shortcut
+  quicktile/        # Quick Settings Tile 快速录音
+  recording/        # 前台录音服务、本地导出、播放
+  reminder/         # AlarmManager 调度、到点通知、开机重挂
+  relay/            # Relay 上传客户端
+  sync/             # WebDAV 双向同步、定时同步
+  transcription/    # 转写链路与重试
+  ui/               # Compose 主界面、设置页、日历视图
+
+relay_service/app/
+  main.py           # FastAPI 入口
+  ai.py             # AI 分析入口与 provider 兼容层
 ```
-app/                  # Android 客户端
-  src/main/java/com/ydoc/app/
-    ui/               # Compose UI
-    sync/             # WebDAV 双向同步
-    overlay/          # 悬浮窗服务
-    recording/        # 录音服务
-    relay/            # Relay 中转客户端
-    transcription/    # 豆包转写
-    data/             # Room + Repository + MarkdownFormatter
-relay_service/        # FastAPI 临时音频中转服务
-WALKTHROUGH.md        # 开发走查与里程碑
-```
+
+---
+
+## AI 配置说明
+
+### Relay 模式
+适合自部署 Ydrop relay 服务：
+- `AI Base URL` 填 relay 地址
+- App 调用 `/healthz` 和 `/ai/analyze-note`
+
+### 模型网关模式
+适合直连 OpenAI / Anthropic 兼容网关：
+- `AI Base URL` 填网关根地址
+- `AI Token` 填 API Key
+- `模型名称` 填具体模型（如 `gpt-4o`、`claude-sonnet-4-5-20250514`、`glm-5.1`）
+- 协议模式可选 `AUTO / OPENAI / ANTHROPIC`
+  - AUTO 优先探测 provider，失败回退 relay
+  - OpenAI → `/v1/chat/completions`
+  - Anthropic → `/v1/messages`
+- 已兼容模型将 JSON 包在 ` ```json ``` ` 代码块里返回的情况
+
+---
 
 ## 构建
 
 ```bash
 ./gradlew assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
+## 接下来的方向
+
+- AI 第二阶段：基于 note 的问答与批量整理
+- 提醒第二阶段：自定义时间选择、重复规则、外发通知
+- 快捷启动第二阶段：更多系统级绑定指引和机型适配
+- 自动化回归测试
+
+---
+
+## License
+
+Private project.

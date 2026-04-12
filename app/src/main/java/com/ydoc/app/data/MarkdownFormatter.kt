@@ -58,6 +58,8 @@ class MarkdownFormatter {
         appendLine("source: ${sourceLabel(note.source)}")
         appendLine("category: $categoryLabel")
         appendLine("priority: $priorityLabel")
+        appendLine("archived: ${note.isArchived}")
+        if (note.tags.isNotEmpty()) appendLine("tags: ${note.tags.joinToString(",")}")
         appendLine("status: ${note.status.name.lowercase()}")
         appendLine("transcriptionStatus: ${note.transcriptionStatus.name.lowercase()}")
         note.audioPath?.let { appendLine("audioPath: \"${it.replace("\\\\", "/")}\"") }
@@ -97,6 +99,8 @@ class MarkdownFormatter {
         val source = parseSource(frontmatter["source"])
         val category = parseCategory(frontmatter["category"])
         val priority = parsePriority(frontmatter["priority"])
+        val isArchived = parseArchived(frontmatter["archived"], remotePath)
+        val tags = frontmatter["tags"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
         val title = extractTitle(content)
         val body = extractBody(content)
         val isVoice = source == NoteSource.VOICE
@@ -129,6 +133,11 @@ class MarkdownFormatter {
             pinned = false,
             remotePath = remotePath,
             lastPulledAt = System.currentTimeMillis(),
+            isArchived = isArchived,
+            archivedAt = if (isArchived) updatedAt else null,
+            isTrashed = false,
+            trashedAt = null,
+            tags = tags,
         )
     }
 
@@ -177,6 +186,16 @@ class MarkdownFormatter {
     private fun parseTranscriptionStatus(value: String?): TranscriptionStatus = runCatching {
         TranscriptionStatus.valueOf(value?.trim()?.uppercase() ?: "NOT_STARTED")
     }.getOrDefault(TranscriptionStatus.NOT_STARTED)
+
+    private fun parseArchived(value: String?, remotePath: String): Boolean {
+        val fromFrontmatter = when (value?.trim()?.lowercase()) {
+            "true", "1", "yes" -> true
+            "false", "0", "no" -> false
+            else -> null
+        }
+        if (fromFrontmatter != null) return fromFrontmatter
+        return remotePath.split('/').any { it.equals("archive", ignoreCase = true) }
+    }
 
     private fun extractTitle(content: String): String {
         val afterFrontmatter = skipFrontmatter(content)

@@ -8,3 +8,9 @@ local.properties
 relay_service/.env
 relay_service/app/__pycache__/
 .kotlin/
+.android-emu-home/
+.claude/
+tmp/
+emu-*.xml
+emu-*.png
+nul

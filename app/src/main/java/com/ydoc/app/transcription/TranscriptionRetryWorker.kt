@@ -3,7 +3,7 @@ package com.ydoc.app.transcription
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.ydoc.app.data.AppContainer
+import com.ydoc.app.appContainer
 import kotlinx.coroutines.flow.first
 
 class TranscriptionRetryWorker(
@@ -12,7 +12,7 @@ class TranscriptionRetryWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val noteId = inputData.getString(KEY_NOTE_ID) ?: return Result.failure()
-        val container = AppContainer(applicationContext)
+        val container = applicationContext.appContainer
         val note = container.noteRepository.getNote(noteId) ?: return Result.failure()
         val current = container.settingsStore.settingsFlow.first()
         if (!current.relay.enabled || !current.volcengine.enabled) return Result.failure()

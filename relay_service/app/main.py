@@ -6,9 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse
 
+from .ai import analyze_note
 from .auth import require_relay_token
 from .cleanup import cleanup_loop
-from .models import DeleteResponse, HealthResponse, UploadResponse
+from .models import AiAnalyzeRequest, AiAnalyzeResponse, DeleteResponse, HealthResponse, UploadResponse
 from .storage import RelayStorage
 
 
@@ -27,6 +28,11 @@ storage = RelayStorage()
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    return HealthResponse()
+
+
+@app.get("/healthz", response_model=HealthResponse)
+async def healthz() -> HealthResponse:
     return HealthResponse()
 
 
@@ -49,3 +55,8 @@ async def download(file_id: str) -> FileResponse:
 async def delete(file_id: str) -> DeleteResponse:
     storage.delete(file_id)
     return DeleteResponse(file_id=file_id)
+
+
+@app.post("/ai/analyze-note", response_model=AiAnalyzeResponse, dependencies=[Depends(require_relay_token)])
+async def analyze_ai_note(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
+    return analyze_note(payload)

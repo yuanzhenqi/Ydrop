@@ -58,9 +58,11 @@ data class SyncSettingsState(
     val overlay: OverlayConfig = OverlayConfig(),
     val relay: RelayConfig = RelayConfig(),
     val volcengine: VolcengineConfig = VolcengineConfig(),
+    val ai: AiConfig = AiConfig(),
     val requiresOverlayPermission: Boolean = false,
     val isTestingRelay: Boolean = false,
     val isTestingVolcengine: Boolean = false,
     val isTestingWebDav: Boolean = false,
+    val isTestingAi: Boolean = false,
     val hasUnsavedChanges: Boolean = false,
 )
