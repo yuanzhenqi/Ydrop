@@ -18,6 +18,14 @@ class Settings:
     default_ttl_minutes: int
     max_ttl_minutes: int
     cleanup_interval_seconds: int
+    # Web 端新增
+    sqlite_db_path: str
+    webdav_base_url: str
+    webdav_username: str
+    webdav_password: str
+    webdav_folder: str
+    webdav_sync_interval: int
+    static_dir: Path
 
 
 def get_settings() -> Settings:
@@ -38,4 +46,11 @@ def get_settings() -> Settings:
         default_ttl_minutes=int(os.getenv("DEFAULT_TTL_MINUTES", "1440")),
         max_ttl_minutes=int(os.getenv("MAX_TTL_MINUTES", "1440")),
         cleanup_interval_seconds=int(os.getenv("CLEANUP_INTERVAL_SECONDS", "600")),
+        sqlite_db_path=os.getenv("SQLITE_DB_PATH", "./storage/ydrop.db"),
+        webdav_base_url=os.getenv("WEBDAV_BASE_URL", ""),
+        webdav_username=os.getenv("WEBDAV_USERNAME", ""),
+        webdav_password=os.getenv("WEBDAV_PASSWORD", ""),
+        webdav_folder=os.getenv("WEBDAV_FOLDER", "ydoc/inbox"),
+        webdav_sync_interval=int(os.getenv("WEBDAV_SYNC_INTERVAL", "300")),
+        static_dir=Path(os.getenv("STATIC_DIR", "./static")).resolve(),
     )
