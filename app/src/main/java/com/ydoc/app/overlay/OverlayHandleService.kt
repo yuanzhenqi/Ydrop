@@ -758,15 +758,7 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                 dismissLayer?.visibility = View.VISIBLE
                 updateStripHeight()
                 renderStripEntryBar()
-                // dock 居于屏幕底部水平居中
-                stripEntryBar.post {
-                    val screenWidth = resources.displayMetrics.widthPixels
-                    val railWidth = appliedRailWidthPx.takeIf { it > 0 } ?: railBaseWidthPx()
-                    val railLeft = if (overlayState.dockSide == OverlayDockSide.LEFT) 0 else screenWidth - railWidth
-                    val railCenter = railLeft + railWidth / 2
-                    val screenCenter = screenWidth / 2
-                    stripEntryBar.translationX = (screenCenter - railCenter).toFloat()
-                }
+                stripEntryBar.translationX = 0f
             }
             OverlaySurfaceState.COMPOSER_ACTIVE -> {
                 railContainer.visibility = View.VISIBLE

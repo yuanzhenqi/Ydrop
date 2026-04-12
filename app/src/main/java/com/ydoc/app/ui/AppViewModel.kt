@@ -751,14 +751,17 @@ class AppViewModel(
             app.stopService(Intent(app, RecordingService::class.java))
             stopRecordingTimer()
             noteResult.onSuccess { result ->
-                val syncError = runCatching { syncIfEnabled(result.note) }.exceptionOrNull()?.message
                 val completionMessage = pendingRecordingCompletionMessage
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
                     captureExpanded = false,
                     pendingQuickRecord = false,
-                    message = completionMessage ?: result.buildUserMessage(syncError),
+                    message = completionMessage ?: result.buildUserMessage(null),
                 )
+                // sync 在后台独立运行，不阻塞 UI（AI 会在转写完成后自动触发）
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { syncIfEnabled(result.note) }
+                }
             }.onFailure {
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
