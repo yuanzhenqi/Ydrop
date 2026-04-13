@@ -413,3 +413,114 @@ AI 第一阶段是非破坏式建议流，单独存储：
 - [ ] AI 分析包含"明天上午 X 点"类时间表达的便签，提醒时间是否准确
 - [ ] 日历 agenda 视图「新增日程」弹窗创建提醒是否正常
 - [ ] NoteCard 复制内容按钮是否将文本复制到系统剪贴板
+
+---
+
+## 里程碑 H — Web 端（2026-04-13）
+
+### 背景
+
+手机端核心能力已完备，桌面场景需要 Web 端补充。设计目标：
+- 扩展现有 `relay_service`（FastAPI），不新建独立后端
+- Web 端用 Next.js 静态导出，由 FastAPI 同端口 serve
+- 保持与 Android 端的 WebDAV 双向同步，Markdown 格式 100% 兼容
+
+### 架构
+
+```
+[Android] ←WebDAV→ [NAS] ←WebDAV→ [relay_service] ←HTTP→ [Next.js 静态页面]
+                                     + SQLite
+```
+
+### 后端改动
+
+#### `relay_service/app/` 新增 8 个模块
+
+- **`database.py`** — aiosqlite 连接管理，WAL 模式，4 张表：
+  - `notes`（与 Android Room NoteEntity 字段对齐）
+  - `ai_suggestions`、`reminders`、`tombstones`
+- **`models_notes.py`** — Pydantic 请求/响应模型
+- **`markdown_format.py`** — Python 移植的 MarkdownFormatter.kt，100% 兼容：
+  - 中文标签：`普通/待办/任务/提醒`、`低/中/高/紧急`、`文字/语音`
+  - frontmatter 字段顺序、日期格式、文件名规则完全一致
+  - Round-trip 测试通过
+- **`routes_notes.py`** — 13 个笔记 CRUD 端点 + AI 分析触发
+- **`routes_reminders.py`** — 4 个提醒 CRUD 端点
+- **`routes_sync.py`** — 同步状态 + 手动触发
+- **`webdav_client.py`** — httpx 异步 WebDAV 客户端：
+  - PROPFIND/PUT/GET/DELETE/MKCOL
+  - 自动管理 inbox/ 与 archive/ 两个文件夹
+- **`sync_orchestrator.py`** — 移植 SyncOrchestrator.kt 的双向同步：
+  - 时间戳比较决定冲突方向（last-write-wins）
+  - tombstone 语义支持远端清理
+  - 后台定时循环 + 手动触发
+
+#### `main.py` 扩展
+
+- 注册新 3 个 router（notes/reminders/sync）
+- 启动后台同步循环（lifespan）
+- CORS 中间件
+- FastAPI 直接 serve Next.js 静态导出：`/_next` + SPA 路由回退
+
+### 前端（`relay_service/web/`）
+
+#### 技术栈
+
+Next.js 14 App Router（静态导出）+ Tailwind CSS + SWR + Zustand + lucide-react
+
+#### 页面（6 个）
+
+| 路由 | 内容 |
+|------|------|
+| `/inbox` | 收件箱 + QuickCapture + 搜索栏 + NoteCard 列表 |
+| `/archive` | 归档 |
+| `/trash` | 回收站 + 清空 |
+| `/note?id=xxx` | 笔记编辑 + AI 建议面板（用 query 参数绕开静态导出限制） |
+| `/calendar` | 月历网格 + 日议程 |
+| `/settings` | Token 配置 + 同步状态 |
+
+#### 核心组件
+
+- **NoteCard** — 颜色标识（colorToken）+ 展开操作（AI整理/复制/编辑/归档/删除）
+- **QuickCapture** — 快速记录框，支持分类/优先级/标签
+- **Sidebar** — 导航栏（lucide 图标）
+- **SearchBar** — 全局搜索（Zustand 管理状态）
+
+### 运维
+
+- **`run.sh`** — 一键启动脚本：检查 Python 3.11+、Node.js、构建前端、启动 uvicorn
+- **`.env.example`** — 完整环境变量文档
+- **README 重写** — 三端架构图、技术栈矩阵、快速启动流程
+
+### 端到端验证
+
+全部通过：
+- `/healthz` 200
+- `POST /api/notes` 创建笔记，colorToken 自动计算（TODO+HIGH→AMBER）
+- `GET /api/notes` 返回带中文标签的笔记列表
+- `GET /inbox` 返回完整 Next.js HTML（Sidebar/QuickCapture 渲染正确）
+- Markdown round-trip 测试通过
+
+### 关键决策
+
+- **扩展 relay 而非新建后端**：共享鉴权、部署更简单、AI 分析已在这里
+- **Web 端用查询参数 `/note?id=xxx`**：静态导出不支持动态路由预生成
+- **SQLite WAL 模式**：避免后台同步和 API 请求并发锁冲突
+- **npm install 用 npmmirror**：国内网络下 npmjs.org 超时频繁
+
+### 遗留 / 待办
+
+- 真实三端同步验证待做（Phase B）
+- AI 问答 / 批量整理接口未实现
+- Web 端键盘快捷键、Markdown 预览、图片附件未做
+- 提醒自定义时间 / 重复规则未做
+
+### 手动回归清单
+
+- [ ] `run.sh` 在干净环境能一键启动（检查 venv 创建、npm install、构建）
+- [ ] Web 端首次访问在设置页输入 token 能正常鉴权
+- [ ] QuickCapture 创建笔记后 NoteCard 立即刷新显示
+- [ ] 编辑笔记改分类，返回收件箱颜色圆点正确更新
+- [ ] 左侧导航 Inbox/Archive/Trash/Calendar/Settings 路由正常
+- [ ] WebDAV 配置后 5 分钟内自动同步触发
+- [ ] 手动 `POST /api/sync/trigger` 返回状态，日志中有 PUSHED/PULLED 记录
