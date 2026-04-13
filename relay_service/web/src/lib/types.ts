@@ -51,6 +51,51 @@ export interface Reminder {
 
 export type RecurrenceRule = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'WEEKDAYS' | null
 
+// ─── App Settings ───
+
+export interface WebDavSettings {
+  base_url: string
+  username: string
+  password_set: boolean
+  folder: string
+  auto_sync: boolean
+  sync_interval: number
+  enabled: boolean
+}
+
+export interface AiSettings {
+  enabled: boolean
+  base_url: string
+  token_set: boolean
+  model: string
+  endpoint_mode: 'AUTO' | 'OPENAI' | 'ANTHROPIC'
+  prompt_supplement: string
+  auto_run_on_text_save: boolean
+  auto_retry_on_failure: boolean
+}
+
+export interface ServerInfo {
+  version: string
+  webdav_configured: boolean
+  ai_configured: boolean
+}
+
+export interface AppSettings {
+  webdav: WebDavSettings
+  ai: AiSettings
+  server_info: ServerInfo
+}
+
+export interface SettingsUpdate {
+  webdav?: Partial<WebDavSettings> & { password?: string }
+  ai?: Partial<AiSettings> & { token?: string }
+}
+
+export interface TestResult {
+  ok: boolean
+  message: string
+}
+
 export interface ReminderListResponse {
   items: Reminder[]
   total: number

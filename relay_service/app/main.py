@@ -15,9 +15,11 @@ from .cleanup import cleanup_loop
 from .config import get_settings
 from .database import close_db, get_db
 from .models import AiAnalyzeRequest, AiAnalyzeResponse, DeleteResponse, HealthResponse, UploadResponse
+from . import settings_store
 from .routes_ai import router as ai_router
 from .routes_notes import router as notes_router
 from .routes_reminders import router as reminders_router
+from .routes_settings import router as settings_router
 from .routes_sync import router as sync_router
 from .storage import RelayStorage
 from .sync_orchestrator import sync_loop
@@ -26,6 +28,7 @@ from .sync_orchestrator import sync_loop
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await get_db()
+    await settings_store.init_and_migrate()
     cleanup_task = asyncio.create_task(cleanup_loop())
     sync_task = asyncio.create_task(sync_loop())
     try:
@@ -52,6 +55,7 @@ app.include_router(notes_router)
 app.include_router(reminders_router)
 app.include_router(sync_router)
 app.include_router(ai_router)
+app.include_router(settings_router)
 
 
 # ── 原有接口 ──

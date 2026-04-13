@@ -82,10 +82,10 @@ def _provider_payload(payload: AiAnalyzeRequest) -> dict:
 
 
 def analyze_note(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
-    settings = get_settings()
-    if settings.ai_provider_base_url and settings.ai_provider_api_key:
+    cfg = _resolve_ai_config()
+    if cfg["enabled"] and cfg["base_url"] and cfg["token"]:
         try:
-            return _analyze_with_provider(payload)
+            return _analyze_with_provider(payload, cfg)
         except Exception as exc:
             logger.warning(
                 "AI provider analysis failed in provider mode, falling back to heuristic (%s: %s)",
@@ -96,11 +96,42 @@ def analyze_note(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
     return _analyze_heuristically(payload)
 
 
-def _analyze_with_provider(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
-    settings = get_settings()
+def _resolve_ai_config() -> dict:
+    """从 settings_store 同步读取 AI 配置（ai.py 是同步调用链）。
+    把 async store 包装成同步使用——用 asyncio.run_coroutine_threadsafe 或直接同步读 DB。
+    简化：用 sqlite3 同步直读（和 aiosqlite 的文件相同）。"""
+    import sqlite3
+    from .config import get_settings
+    env = get_settings()
+    try:
+        conn = sqlite3.connect(env.sqlite_db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT key, value FROM app_settings WHERE key LIKE 'ai.%'").fetchall()
+        conn.close()
+        kv = {r["key"]: r["value"] for r in rows}
+        return {
+            "enabled": (kv.get("ai.enabled", "false").lower() == "true"),
+            "base_url": kv.get("ai.base_url", "") or env.ai_provider_base_url,
+            "token": kv.get("ai.token", "") or env.ai_provider_api_key,
+            "model": kv.get("ai.model", "") or env.ai_provider_model,
+            "endpoint_mode": kv.get("ai.endpoint_mode", "AUTO"),
+        }
+    except Exception:
+        return {
+            "enabled": bool(env.ai_provider_base_url and env.ai_provider_api_key),
+            "base_url": env.ai_provider_base_url,
+            "token": env.ai_provider_api_key,
+            "model": env.ai_provider_model,
+            "endpoint_mode": "AUTO",
+        }
+
+
+def _analyze_with_provider(payload: AiAnalyzeRequest, cfg: dict | None = None) -> AiAnalyzeResponse:
+    if cfg is None:
+        cfg = _resolve_ai_config()
     request_body = json.dumps(
         {
-            "model": settings.ai_provider_model or payload.model,
+            "model": cfg["model"] or payload.model,
             "messages": [
                 {
                     "role": "system",
@@ -115,11 +146,11 @@ def _analyze_with_provider(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
         }
     ).encode("utf-8")
     request = urllib.request.Request(
-        settings.ai_provider_base_url.rstrip("/") + "/chat/completions",
+        cfg["base_url"].rstrip("/") + "/chat/completions",
         data=request_body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {settings.ai_provider_api_key}",
+            "Authorization": f"Bearer {cfg['token']}",
             "Content-Type": "application/json",
         },
     )

@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS tombstones (
     note_id TEXT PRIMARY KEY,
     deleted_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at INTEGER NOT NULL
+);
 """
 
 

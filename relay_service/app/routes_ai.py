@@ -95,8 +95,9 @@ async def chat(body: ChatRequest):
         for r in rows
     ]
 
-    settings = get_settings()
-    answer = _call_chat_provider(body.messages, notes, settings) if (settings.ai_provider_base_url and settings.ai_provider_api_key) else _heuristic_chat_answer(body.messages, notes)
+    from . import settings_store
+    ai_cfg = await settings_store.get_ai_config()
+    answer = _call_chat_provider(body.messages, notes, ai_cfg) if (ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]) else _heuristic_chat_answer(body.messages, notes)
 
     return ChatResponse(
         answer=answer,
@@ -105,7 +106,7 @@ async def chat(body: ChatRequest):
     )
 
 
-def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], settings) -> str:
+def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dict) -> str:
     system = (
         "你是用户的个人笔记助手。用户会用中文问你关于他自己笔记的问题。\n"
         "下面是用户最近的笔记（JSON 数组，按更新时间倒序）。请只基于这些笔记内容回答，不要编造信息。\n"
@@ -116,7 +117,7 @@ def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], settings
     )
 
     body = {
-        "model": settings.ai_provider_model,
+        "model": cfg["model"],
         "messages": [
             {"role": "system", "content": system},
             *[{"role": m.role, "content": m.content} for m in messages],
@@ -125,11 +126,11 @@ def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], settings
     data = json.dumps(body).encode("utf-8")
 
     req = urllib.request.Request(
-        settings.ai_provider_base_url.rstrip("/") + "/chat/completions",
+        cfg["base_url"].rstrip("/") + "/chat/completions",
         data=data,
         method="POST",
         headers={
-            "Authorization": f"Bearer {settings.ai_provider_api_key}",
+            "Authorization": f"Bearer {cfg['token']}",
             "Content-Type": "application/json",
         },
     )
@@ -221,13 +222,14 @@ async def batch_organize(body: BatchOrganizeRequest):
     if len(notes) < 2:
         return BatchOrganizeResponse(total_analyzed=len(notes), clusters=[])
 
-    settings = get_settings()
-    clusters = _call_organize_provider(notes, settings) if (settings.ai_provider_base_url and settings.ai_provider_api_key) else _heuristic_organize(notes)
+    from . import settings_store
+    ai_cfg = await settings_store.get_ai_config()
+    clusters = _call_organize_provider(notes, ai_cfg) if (ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]) else _heuristic_organize(notes)
 
     return BatchOrganizeResponse(total_analyzed=len(notes), clusters=clusters)
 
 
-def _call_organize_provider(notes: list[dict], settings) -> list[ClusterSuggestion]:
+def _call_organize_provider(notes: list[dict], cfg: dict) -> list[ClusterSuggestion]:
     prompt = (
         "你是用户笔记整理助手。下面是用户的 inbox 笔记列表。\n"
         "请分析后返回聚类建议，识别出可以合并的相似笔记、可以转成任务的随手记、可以保持独立的笔记。\n"
@@ -236,17 +238,17 @@ def _call_organize_provider(notes: list[dict], settings) -> list[ClusterSuggesti
         f"笔记：{json.dumps(notes, ensure_ascii=False)}"
     )
     body = {
-        "model": settings.ai_provider_model,
+        "model": cfg["model"],
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
     }
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        settings.ai_provider_base_url.rstrip("/") + "/chat/completions",
+        cfg["base_url"].rstrip("/") + "/chat/completions",
         data=data,
         method="POST",
         headers={
-            "Authorization": f"Bearer {settings.ai_provider_api_key}",
+            "Authorization": f"Bearer {cfg['token']}",
             "Content-Type": "application/json",
         },
     )
