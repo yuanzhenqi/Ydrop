@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -1332,7 +1333,6 @@ private fun QuickRecordShortcutSection(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NotesSectionRowV2(
     state: AppUiState,
@@ -1341,37 +1341,40 @@ private fun NotesSectionRowV2(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = state.currentSection == NoteListSection.INBOX,
-                onClick = { onShowSection(NoteListSection.INBOX) },
-                label = { Text("收件箱 ${state.notes.size}") },
+        FilterChip(
+            selected = state.currentSection == NoteListSection.INBOX,
+            onClick = { onShowSection(NoteListSection.INBOX) },
+            label = { Text("收件箱 ${state.notes.size}", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.height(30.dp),
+        )
+        FilterChip(
+            selected = state.currentSection == NoteListSection.CALENDAR,
+            onClick = { onShowSection(NoteListSection.CALENDAR) },
+            label = { Text("日历", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.height(30.dp),
+        )
+        FilterChip(
+            selected = state.currentSection == NoteListSection.ARCHIVE,
+            onClick = { onShowSection(NoteListSection.ARCHIVE) },
+            label = { Text("归档 ${state.archivedNotes.size}", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.height(30.dp),
+        )
+        FilterChip(
+            selected = state.currentSection == NoteListSection.TRASH,
+            onClick = { onShowSection(NoteListSection.TRASH) },
+            label = { Text("回收站 ${state.trashedNotes.size}", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.height(30.dp),
+        )
+        if (state.currentSection == NoteListSection.TRASH && state.trashedNotes.isNotEmpty()) {
+            Spacer(Modifier.weight(1f))
+            AssistChip(
+                onClick = onEmptyTrash,
+                label = { Text("清空", style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier.height(30.dp),
             )
-            FilterChip(
-                selected = state.currentSection == NoteListSection.CALENDAR,
-                onClick = { onShowSection(NoteListSection.CALENDAR) },
-                label = { Text("日历 ${state.reminders.count { it.status == ReminderStatus.SCHEDULED }}") },
-            )
-            FilterChip(
-                selected = state.currentSection == NoteListSection.ARCHIVE,
-                onClick = { onShowSection(NoteListSection.ARCHIVE) },
-                label = { Text("归档 ${state.archivedNotes.size}") },
-            )
-            FilterChip(
-                selected = state.currentSection == NoteListSection.TRASH,
-                onClick = { onShowSection(NoteListSection.TRASH) },
-                label = { Text("回收站 ${state.trashedNotes.size}") },
-            )
-        }
-        AnimatedVisibility(
-            visible = state.currentSection == NoteListSection.TRASH && state.trashedNotes.isNotEmpty(),
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically(),
-        ) {
-            AssistChip(onClick = onEmptyTrash, label = { Text("清空") })
         }
     }
 }
