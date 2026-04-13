@@ -15,6 +15,7 @@ from .cleanup import cleanup_loop
 from .config import get_settings
 from .database import close_db, get_db
 from .models import AiAnalyzeRequest, AiAnalyzeResponse, DeleteResponse, HealthResponse, UploadResponse
+from .routes_ai import router as ai_router
 from .routes_notes import router as notes_router
 from .routes_reminders import router as reminders_router
 from .routes_sync import router as sync_router
@@ -50,6 +51,7 @@ app.add_middleware(
 app.include_router(notes_router)
 app.include_router(reminders_router)
 app.include_router(sync_router)
+app.include_router(ai_router)
 
 
 # ── 原有接口 ──
