@@ -95,6 +95,57 @@ export async function cancelReminder(id: string): Promise<Reminder> {
   return request<Reminder>(`/api/reminders/${id}/cancel`, { method: 'POST' })
 }
 
+// ── AI Chat & Organize ──
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatFilter {
+  category?: string
+  priority?: string
+  tag?: string
+  from?: number
+  to?: number
+  include_archived?: boolean
+  max_notes?: number
+}
+
+export interface ChatResponse {
+  answer: string
+  referenced_note_ids: string[]
+  referenced_count: number
+}
+
+export async function aiChat(messages: ChatMessage[], filter?: ChatFilter): Promise<ChatResponse> {
+  return request<ChatResponse>('/api/ai/chat', {
+    method: 'POST',
+    body: JSON.stringify({ messages, filter }),
+  })
+}
+
+export interface ClusterSuggestion {
+  cluster_id: string
+  theme: string
+  note_ids: string[]
+  suggested_action: 'merge' | 'convert_to_task' | 'keep'
+  suggested_title?: string
+  reason: string
+}
+
+export interface BatchOrganizeResponse {
+  total_analyzed: number
+  clusters: ClusterSuggestion[]
+}
+
+export async function aiBatchOrganize(noteIds?: string[]): Promise<BatchOrganizeResponse> {
+  return request<BatchOrganizeResponse>('/api/ai/batch-organize', {
+    method: 'POST',
+    body: JSON.stringify({ note_ids: noteIds, max_notes: 50 }),
+  })
+}
+
 // ── Sync ──
 
 export async function fetchSyncStatus(): Promise<SyncStatus> {
