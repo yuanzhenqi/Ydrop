@@ -56,6 +56,7 @@ class ReminderCreate(BaseModel):
     title: str
     scheduled_at: int
     source: str = "MANUAL"
+    recurrence: str | None = None  # DAILY / WEEKLY / MONTHLY / WEEKDAYS / null
 
 
 class ReminderResponse(BaseModel):
@@ -66,6 +67,7 @@ class ReminderResponse(BaseModel):
     source: str
     status: str
     delivery_targets: list[str] = Field(default_factory=lambda: ["LOCAL_NOTIFICATION"])
+    recurrence: str | None = None
     created_at: int
     updated_at: int
 

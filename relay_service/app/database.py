@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     source TEXT NOT NULL DEFAULT 'MANUAL',
     status TEXT NOT NULL DEFAULT 'SCHEDULED',
     delivery_targets_json TEXT DEFAULT '["LOCAL_NOTIFICATION"]',
+    recurrence TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -91,8 +92,18 @@ async def get_db() -> aiosqlite.Connection:
         await _db.execute("PRAGMA journal_mode=WAL")
         await _db.execute("PRAGMA foreign_keys=ON")
         await _db.executescript(SCHEMA_SQL)
+        # Migrations for older DBs
+        await _migrate(_db)
         await _db.commit()
     return _db
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Add missing columns on existing databases (idempotent)."""
+    cur = await db.execute("PRAGMA table_info(reminders)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "recurrence" not in cols:
+        await db.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT")
 
 
 async def close_db() -> None:

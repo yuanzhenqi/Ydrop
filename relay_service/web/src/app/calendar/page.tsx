@@ -2,13 +2,25 @@
 
 import { useState } from 'react'
 import { useReminders } from '@/hooks/useReminders'
+import { useNotes } from '@/hooks/useNotes'
 import { cancelReminder } from '@/lib/api'
-import { formatTime, formatDate } from '@/lib/date'
-import { Calendar, ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { formatTime } from '@/lib/date'
+import { ReminderForm } from '@/components/reminders/ReminderForm'
+import { Calendar, ChevronLeft, ChevronRight, X, Plus, Repeat } from 'lucide-react'
+
+const RECURRENCE_LABELS: Record<string, string> = {
+  DAILY: '每天',
+  WEEKDAYS: '工作日',
+  WEEKLY: '每周',
+  MONTHLY: '每月',
+}
 
 export default function CalendarPage() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date())
   const { reminders, mutate } = useReminders()
+  const { notes } = useNotes({ trashed: 'false' })
+  const [showForm, setShowForm] = useState(false)
+  const [formDate, setFormDate] = useState<Date | null>(null)
 
   const year = selectedDate.getFullYear()
   const month = selectedDate.getMonth()
@@ -25,11 +37,26 @@ export default function CalendarPage() {
   const [viewDay, setViewDay] = useState<number | null>(null)
   const selectedDayReminders = viewDay ? dayReminders(viewDay) : []
 
+  const firstNoteId = notes[0]?.id
+
   return (
     <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
-      <h1 className="text-xl font-bold flex items-center gap-2">
-        <Calendar className="w-5 h-5" /> 日历
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold flex items-center gap-2">
+          <Calendar className="w-5 h-5" /> 日历
+        </h1>
+        {firstNoteId && (
+          <button
+            onClick={() => {
+              setFormDate(viewDay ? new Date(year, month, viewDay) : new Date())
+              setShowForm(true)
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700"
+          >
+            <Plus className="w-3.5 h-3.5" /> 新建提醒
+          </button>
+        )}
+      </div>
 
       {/* Month navigation */}
       <div className="flex items-center justify-between bg-white rounded-xl border p-3">
@@ -86,7 +113,14 @@ export default function CalendarPage() {
             selectedDayReminders.map((r) => (
               <div key={r.id} className="bg-white rounded-xl border p-3 flex items-center gap-3">
                 <div className="flex-1">
-                  <p className="text-sm font-medium">{r.title}</p>
+                  <p className="text-sm font-medium flex items-center gap-1.5">
+                    {r.title}
+                    {r.recurrence && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 inline-flex items-center gap-0.5">
+                        <Repeat className="w-3 h-3" /> {RECURRENCE_LABELS[r.recurrence] || r.recurrence}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-xs text-gray-400">{formatTime(r.scheduled_at)} · {r.status}</p>
                 </div>
                 {r.status === 'SCHEDULED' && (
@@ -102,6 +136,15 @@ export default function CalendarPage() {
             ))
           )}
         </div>
+      )}
+
+      {showForm && firstNoteId && (
+        <ReminderForm
+          noteId={firstNoteId}
+          initialDate={formDate || undefined}
+          onClose={() => setShowForm(false)}
+          onCreated={() => mutate()}
+        />
       )}
     </div>
   )
