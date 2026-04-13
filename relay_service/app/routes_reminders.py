@@ -14,6 +14,11 @@ router = APIRouter(prefix="/api/reminders", dependencies=[Depends(require_relay_
 
 
 def _row_to_reminder(row) -> ReminderResponse:
+    # recurrence may be missing on older rows
+    try:
+        recurrence = row["recurrence"]
+    except (IndexError, KeyError):
+        recurrence = None
     return ReminderResponse(
         id=row["id"],
         note_id=row["note_id"],
@@ -22,6 +27,7 @@ def _row_to_reminder(row) -> ReminderResponse:
         source=row["source"],
         status=row["status"],
         delivery_targets=json.loads(row["delivery_targets_json"] or '["LOCAL_NOTIFICATION"]'),
+        recurrence=recurrence,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -61,10 +67,11 @@ async def create_reminder(body: ReminderCreate):
     reminder_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
 
+    recurrence = body.recurrence.upper() if body.recurrence else None
     await db.execute(
-        """INSERT INTO reminders (id, note_id, title, scheduled_at, source, status, delivery_targets_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'SCHEDULED', '["LOCAL_NOTIFICATION"]', ?, ?)""",
-        [reminder_id, body.note_id, body.title, body.scheduled_at, body.source.upper(), now, now],
+        """INSERT INTO reminders (id, note_id, title, scheduled_at, source, status, delivery_targets_json, recurrence, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'SCHEDULED', '["LOCAL_NOTIFICATION"]', ?, ?, ?)""",
+        [reminder_id, body.note_id, body.title, body.scheduled_at, body.source.upper(), recurrence, now, now],
     )
     await db.commit()
 

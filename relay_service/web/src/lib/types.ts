@@ -44,9 +44,12 @@ export interface Reminder {
   source: string
   status: string
   delivery_targets: string[]
+  recurrence?: string | null
   created_at: number
   updated_at: number
 }
+
+export type RecurrenceRule = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'WEEKDAYS' | null
 
 export interface ReminderListResponse {
   items: Reminder[]
