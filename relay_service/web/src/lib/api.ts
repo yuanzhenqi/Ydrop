@@ -1,4 +1,4 @@
-import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus } from './types'
+import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult } from './types'
 
 function getToken(): string {
   if (typeof window === 'undefined') return ''
@@ -154,4 +154,22 @@ export async function fetchSyncStatus(): Promise<SyncStatus> {
 
 export async function triggerSync(): Promise<SyncStatus> {
   return request<SyncStatus>('/api/sync/trigger', { method: 'POST' })
+}
+
+// ── App Settings ──
+
+export async function fetchAppSettings(): Promise<AppSettings> {
+  return request<AppSettings>('/api/settings')
+}
+
+export async function updateAppSettings(update: SettingsUpdate): Promise<AppSettings> {
+  return request<AppSettings>('/api/settings', { method: 'PUT', body: JSON.stringify(update) })
+}
+
+export async function testWebDavConnection(): Promise<TestResult> {
+  return request<TestResult>('/api/settings/test/webdav', { method: 'POST' })
+}
+
+export async function testAiConnection(): Promise<TestResult> {
+  return request<TestResult>('/api/settings/test/ai', { method: 'POST' })
 }

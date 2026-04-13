@@ -30,13 +30,26 @@ class RemoteFileInfo:
 
 
 class WebDavClient:
-    def __init__(self) -> None:
-        settings = get_settings()
-        self.base_url = settings.webdav_base_url.rstrip("/")
-        self.username = settings.webdav_username
-        self.password = settings.webdav_password
-        self.folder = settings.webdav_folder.strip("/") or "ydoc/inbox"
+    def __init__(self, base_url: str = "", username: str = "", password: str = "", folder: str = "") -> None:
+        """如果参数为空则 fallback 到 env，后续用 `from_store()` 工厂方法从 settings_store 读。"""
+        env_settings = get_settings()
+        self.base_url = (base_url or env_settings.webdav_base_url).rstrip("/")
+        self.username = username or env_settings.webdav_username
+        self.password = password or env_settings.webdav_password
+        self.folder = (folder or env_settings.webdav_folder).strip("/") or "ydoc/inbox"
         self._client: Optional[httpx.AsyncClient] = None
+
+    @classmethod
+    async def from_store(cls) -> "WebDavClient":
+        """从 settings_store 读取最新配置构造客户端。"""
+        from . import settings_store
+        cfg = await settings_store.get_webdav_config()
+        return cls(
+            base_url=cfg["base_url"],
+            username=cfg["username"],
+            password=cfg["password"],
+            folder=cfg["folder"],
+        )
 
     @property
     def configured(self) -> bool:

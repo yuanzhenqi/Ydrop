@@ -35,8 +35,9 @@ def get_sync_status() -> dict:
 async def sync_bidirectional() -> dict:
     global _last_sync_at, _last_pushed, _last_pulled, _last_errors, _running
 
-    settings = get_settings()
-    if not settings.webdav_base_url:
+    from . import settings_store
+    webdav_cfg = await settings_store.get_webdav_config()
+    if not webdav_cfg["base_url"]:
         logger.info("WebDAV not configured, skipping sync")
         return get_sync_status()
 
@@ -46,7 +47,7 @@ async def sync_bidirectional() -> dict:
     errors = 0
 
     try:
-        client = WebDavClient()
+        client = await WebDavClient.from_store()
         db = await get_db()
 
         # 1. List remote files
@@ -248,16 +249,20 @@ def _row_to_dict(row) -> dict:
 
 
 async def sync_loop() -> None:
-    """Background loop — call from FastAPI lifespan."""
-    settings = get_settings()
-    interval = settings.webdav_sync_interval
-    if not settings.webdav_base_url:
-        logger.info("WebDAV not configured, sync loop disabled")
-        return
-    logger.info("Sync loop started, interval=%ds", interval)
+    """Background loop — 从 settings_store 动态读取间隔。"""
+    from . import settings_store
+    logger.info("Sync loop started (dynamic interval)")
     while True:
+        # 每次循环重读间隔，支持运行时修改
+        try:
+            interval = await settings_store.get_value("webdav.sync_interval", "int") or 300
+        except Exception:
+            interval = 300
         await asyncio.sleep(interval)
         try:
+            cfg = await settings_store.get_webdav_config()
+            if not cfg["base_url"] or not cfg.get("auto_sync", True):
+                continue
             await sync_bidirectional()
         except Exception as e:
             logger.error("Sync loop error: %s", e, exc_info=True)
