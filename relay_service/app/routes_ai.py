@@ -48,6 +48,8 @@ class ChatResponse(BaseModel):
     answer: str
     referenced_note_ids: list[str] = Field(default_factory=list)
     referenced_count: int = 0
+    provider_error: Optional[str] = None
+    used_provider: bool = False
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -97,16 +99,32 @@ async def chat(body: ChatRequest):
 
     from . import settings_store
     ai_cfg = await settings_store.get_ai_config()
-    answer = _call_chat_provider(body.messages, notes, ai_cfg) if (ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]) else _heuristic_chat_answer(body.messages, notes)
+
+    used_provider = False
+    provider_error: Optional[str] = None
+    if ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]:
+        try:
+            answer = _call_chat_provider(body.messages, notes, ai_cfg)
+            used_provider = True
+        except Exception as e:
+            logger.error("Chat provider failed: %s", e)
+            provider_error = str(e)[:250]
+            answer = _heuristic_chat_answer(body.messages, notes)
+    else:
+        answer = _heuristic_chat_answer(body.messages, notes)
 
     return ChatResponse(
         answer=answer,
         referenced_note_ids=[n["id"] for n in notes],
         referenced_count=len(notes),
+        provider_error=provider_error,
+        used_provider=used_provider,
     )
 
 
 def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dict) -> str:
+    from .ai_provider import call_llm
+
     system = (
         "你是用户的个人笔记助手。用户会用中文问你关于他自己笔记的问题。\n"
         "下面是用户最近的笔记（JSON 数组，按更新时间倒序）。请只基于这些笔记内容回答，不要编造信息。\n"
@@ -116,32 +134,11 @@ def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dic
         f"用户笔记：{json.dumps(notes, ensure_ascii=False)}"
     )
 
-    body = {
-        "model": cfg["model"],
-        "messages": [
-            {"role": "system", "content": system},
-            *[{"role": m.role, "content": m.content} for m in messages],
-        ],
-    }
-    data = json.dumps(body).encode("utf-8")
-
-    req = urllib.request.Request(
-        cfg["base_url"].rstrip("/") + "/chat/completions",
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {cfg['token']}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-        j = json.loads(raw)
-        return j["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error("Chat provider failed: %s", e)
-        return _heuristic_chat_answer(messages, notes)
+    llm_messages = [
+        {"role": "system", "content": system},
+        *[{"role": m.role, "content": m.content} for m in messages],
+    ]
+    return call_llm(llm_messages, cfg, response_format="text")
 
 
 def _heuristic_chat_answer(messages: list[ChatMessage], notes: list[dict]) -> str:
@@ -230,6 +227,8 @@ async def batch_organize(body: BatchOrganizeRequest):
 
 
 def _call_organize_provider(notes: list[dict], cfg: dict) -> list[ClusterSuggestion]:
+    from .ai_provider import call_llm, strip_json_fence
+
     prompt = (
         "你是用户笔记整理助手。下面是用户的 inbox 笔记列表。\n"
         "请分析后返回聚类建议，识别出可以合并的相似笔记、可以转成任务的随手记、可以保持独立的笔记。\n"
@@ -237,26 +236,9 @@ def _call_organize_provider(notes: list[dict], cfg: dict) -> list[ClusterSuggest
         "只返回 JSON，不要有其他文字。主题和理由用中文。\n\n"
         f"笔记：{json.dumps(notes, ensure_ascii=False)}"
     )
-    body = {
-        "model": cfg["model"],
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"},
-    }
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        cfg["base_url"].rstrip("/") + "/chat/completions",
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {cfg['token']}",
-            "Content-Type": "application/json",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8")
-        content = json.loads(raw)["choices"][0]["message"]["content"]
-        result = json.loads(content.strip().removeprefix("```json").removesuffix("```").strip())
+        content = call_llm([{"role": "user", "content": prompt}], cfg, response_format="json_object")
+        result = json.loads(strip_json_fence(content))
         return [ClusterSuggestion(**c) for c in result.get("clusters", [])]
     except Exception as e:
         logger.error("Organize provider failed: %s", e)

@@ -2,14 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Inbox, Archive, Trash2, Calendar, Settings, Zap, Sparkles, FolderCog, Tag } from 'lucide-react'
+import { Inbox, Archive, Trash2, Calendar, Settings, Zap, Sparkles, FolderCog } from 'lucide-react'
 
 const NAV = [
   { href: '/inbox', label: '收件箱', icon: Inbox },
   { href: '/chat', label: 'AI 问答', icon: Sparkles },
   { href: '/organize', label: '批量整理', icon: FolderCog },
   { href: '/calendar', label: '日历', icon: Calendar },
-  { href: '/tags', label: '标签', icon: Tag },
   { href: '/archive', label: '归档', icon: Archive },
   { href: '/trash', label: '回收站', icon: Trash2 },
   { href: '/settings', label: '设置', icon: Settings },
