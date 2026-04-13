@@ -66,14 +66,16 @@ async def list_notes(
     conditions = []
     params: list = []
 
+    # 默认排除已归档/已删除的笔记，显式传 true 才包含
     if trashed is True:
         conditions.append("is_trashed = 1")
-    elif trashed is False or trashed is None:
+    else:
         conditions.append("is_trashed = 0")
 
     if archived is True:
         conditions.append("is_archived = 1")
-    elif archived is False:
+    elif trashed is not True:
+        # 只在不是查回收站的情况下，默认排除归档
         conditions.append("is_archived = 0")
 
     if category:
