@@ -127,48 +127,20 @@ def _resolve_ai_config() -> dict:
 
 
 def _analyze_with_provider(payload: AiAnalyzeRequest, cfg: dict | None = None) -> AiAnalyzeResponse:
+    from .ai_provider import call_llm
+
     if cfg is None:
         cfg = _resolve_ai_config()
-    request_body = json.dumps(
-        {
-            "model": cfg["model"] or payload.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": build_system_prompt(payload),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(_provider_payload(payload), ensure_ascii=False),
-                },
-            ],
-            "response_format": {"type": "json_object"},
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        cfg["base_url"].rstrip("/") + "/chat/completions",
-        data=request_body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {cfg['token']}",
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        raw_response = response.read().decode("utf-8")
-    try:
-        payload_json = json.loads(raw_response)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"AI provider interface returned non-JSON response. Preview: {_safe_preview(raw_response)}"
-        ) from exc
-    try:
-        content = payload_json["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(
-            "AI provider interface returned an unexpected chat payload. "
-            f"Preview: {_safe_preview(raw_response)}"
-        ) from exc
+
+    # 确保 model 有值
+    if not cfg.get("model"):
+        cfg = {**cfg, "model": payload.model or "gpt-4o"}
+
+    messages = [
+        {"role": "system", "content": build_system_prompt(payload)},
+        {"role": "user", "content": json.dumps(_provider_payload(payload), ensure_ascii=False)},
+    ]
+    content = call_llm(messages, cfg, response_format="json_object", timeout=20)
     response = _decode_structured_response(content)
     if response.is_effectively_empty():
         logger.warning(

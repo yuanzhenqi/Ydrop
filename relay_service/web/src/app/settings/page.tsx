@@ -46,6 +46,8 @@ export default function SettingsPage() {
   const [draftAi, setDraftAi] = useState<any>({})
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
   // Initial load
   useEffect(() => {
@@ -57,15 +59,24 @@ export default function SettingsPage() {
   }, [])
 
   const refreshAll = async () => {
+    setLoading(true)
+    setLoadError(null)
     try {
       const [s, sync] = await Promise.all([fetchAppSettings(), fetchSyncStatus()])
       setAppSettings(s)
       setSyncStatus(sync)
-      // 重置 draft 为当前值
       setDraftWebdav({})
       setDraftAi({})
     } catch (e) {
-      console.error(e)
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('Load settings failed:', e)
+      setLoadError(msg)
+      // Token 失效 → 回到初始化页
+      if (msg.includes('401') || msg.includes('403')) {
+        setAuthenticated(false)
+      }
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -197,6 +208,19 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {loadError && (
+        <div className="rounded-lg px-4 py-2 text-sm bg-red-50 text-red-700 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <XCircle className="w-4 h-4" /> 加载配置失败：{loadError}
+          </span>
+          <button onClick={refreshAll} className="text-red-600 hover:underline">重试</button>
+        </div>
+      )}
+
+      {loading && !appSettings && (
+        <div className="text-center text-gray-400 py-8">加载设置中...</div>
+      )}
+
       {/* 通用 Tab */}
       {tab === 'general' && (
         <>
@@ -243,18 +267,42 @@ export default function SettingsPage() {
             </button>
           </SettingsSection>
 
-          <SettingsSection title="服务端信息">
-            <div className="text-sm space-y-1 text-gray-600">
-              <div>版本：{appSettings?.server_info.version || '-'}</div>
-              <div>WebDAV：{appSettings?.server_info.webdav_configured ? '✓ 已配置' : '✗ 未配置'}</div>
-              <div>AI：{appSettings?.server_info.ai_configured ? '✓ 已配置' : '✗ 未配置'}</div>
+          <SettingsSection title="数据持久化" description="所有数据都已持久化，重启不丢">
+            <div className="text-sm space-y-2 text-gray-700">
+              <div className="flex items-center gap-2">
+                <span className="text-base">💾</span>
+                <span className="flex-1">SQLite 数据库</span>
+                <code className="text-xs text-gray-500 font-mono">./storage/ydrop.db</code>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-base">☁️</span>
+                <span className="flex-1">远端同步（WebDAV）</span>
+                <span className={appSettings?.server_info.webdav_configured ? 'text-emerald-600' : 'text-gray-400'}>
+                  {appSettings?.server_info.webdav_configured ? '✓ 已配置' : '未配置'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-base">🔑</span>
+                <span className="flex-1">认证 Token</span>
+                <span className="text-emerald-600">✓ 浏览器已存储</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-base">🤖</span>
+                <span className="flex-1">AI Provider</span>
+                <span className={appSettings?.server_info.ai_configured ? 'text-emerald-600' : 'text-gray-400'}>
+                  {appSettings?.server_info.ai_configured ? '✓ 已配置' : '未配置'}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400 pt-2 border-t">
+                版本：{appSettings?.server_info.version || '-'}
+              </div>
             </div>
           </SettingsSection>
         </>
       )}
 
       {/* WebDAV Tab */}
-      {tab === 'webdav' && appSettings && (
+      {tab === 'webdav' && (
         <SettingsSection title="WebDAV 同步" description="跨设备同步笔记，和 Android 端共享同一目录">
           <SettingsToggle
             label="启用 WebDAV 同步"
@@ -280,11 +328,11 @@ export default function SettingsPage() {
                 placeholder="用户名"
               />
             </SettingsField>
-            <SettingsField label="密码" hint={appSettings.webdav.password_set ? '已设置，留空不修改' : '未设置'}>
+            <SettingsField label="密码" hint={appSettings?.webdav.password_set ? '已设置，留空不修改' : '未设置'}>
               <TextInput
                 value={draftWebdav.password ?? ''}
                 onChange={(v) => updateWebdav('password', v)}
-                placeholder={appSettings.webdav.password_set ? '••••••••' : '密码'}
+                placeholder={appSettings?.webdav.password_set ? '••••••••' : '密码'}
                 type="password"
               />
             </SettingsField>
@@ -320,7 +368,7 @@ export default function SettingsPage() {
       )}
 
       {/* AI Tab */}
-      {tab === 'ai' && appSettings && (
+      {tab === 'ai' && (
         <SettingsSection title="AI 整理" description="配置 LLM 服务用于 AI 分析、问答、批量整理">
           <SettingsToggle
             label="启用 AI"
@@ -338,11 +386,11 @@ export default function SettingsPage() {
             />
           </SettingsField>
 
-          <SettingsField label="AI Token" hint={appSettings.ai.token_set ? '已设置，留空不修改' : '未设置'}>
+          <SettingsField label="AI Token" hint={appSettings?.ai.token_set ? '已设置，留空不修改' : '未设置'}>
             <TextInput
               value={draftAi.token ?? ''}
               onChange={(v) => updateAi('token', v)}
-              placeholder={appSettings.ai.token_set ? '••••••••' : 'sk-...'}
+              placeholder={appSettings?.ai.token_set ? '••••••••' : 'sk-...'}
               type="password"
             />
           </SettingsField>

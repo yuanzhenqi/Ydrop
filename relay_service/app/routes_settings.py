@@ -142,31 +142,23 @@ async def test_webdav():
 
 @router.post("/test/ai", response_model=TestResult)
 async def test_ai():
-    """测试 AI provider：发一个极简 ping。"""
+    """测试 AI provider：按 endpoint_mode 发一个极简 ping。"""
+    from .ai_provider import call_llm
+
     a = await settings_store.get_ai_config()
     if not a["base_url"] or not a["token"]:
         return TestResult(ok=False, message="AI base URL 或 token 未配置")
 
-    body = {
-        "model": a["model"],
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 5,
-    }
     try:
-        req = urllib.request.Request(
-            a["base_url"].rstrip("/") + "/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {a['token']}",
-                "Content-Type": "application/json",
-            },
+        content = call_llm(
+            [{"role": "user", "content": "ping"}],
+            a,
+            response_format="text",
+            timeout=15,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("utf-8")
-        j = json.loads(raw)
-        if "choices" in j or "content" in j:
-            return TestResult(ok=True, message="连接成功")
-        return TestResult(ok=False, message=f"返回结构异常: {str(j)[:200]}")
+        if content:
+            preview = content.strip().replace("\n", " ")[:60]
+            return TestResult(ok=True, message=f"连接成功（{a['endpoint_mode']}）：{preview}")
+        return TestResult(ok=False, message="连通但返回为空")
     except Exception as e:
         return TestResult(ok=False, message=f"{type(e).__name__}: {str(e)[:200]}")

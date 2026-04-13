@@ -116,6 +116,8 @@ export interface ChatResponse {
   answer: string
   referenced_note_ids: string[]
   referenced_count: number
+  provider_error?: string
+  used_provider?: boolean
 }
 
 export async function aiChat(messages: ChatMessage[], filter?: ChatFilter): Promise<ChatResponse> {

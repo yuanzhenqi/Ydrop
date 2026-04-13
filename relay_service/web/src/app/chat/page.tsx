@@ -10,6 +10,8 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [lastRefCount, setLastRefCount] = useState(0)
+  const [providerWarning, setProviderWarning] = useState<string | null>(null)
+  const [usedProvider, setUsedProvider] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -23,10 +25,15 @@ export default function ChatPage() {
     setMessages(newMessages)
     setInput('')
     setLoading(true)
+    setProviderWarning(null)
     try {
       const res = await aiChat(newMessages)
       setMessages([...newMessages, { role: 'assistant', content: res.answer }])
       setLastRefCount(res.referenced_count)
+      setUsedProvider(!!res.used_provider)
+      if (res.provider_error) {
+        setProviderWarning(res.provider_error)
+      }
     } catch (e) {
       setMessages([...newMessages, { role: 'assistant', content: `出错了：${e instanceof Error ? e.message : e}` }])
     } finally {
@@ -46,11 +53,28 @@ export default function ChatPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-purple-600" /> AI 问答
+          {usedProvider && (
+            <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+              LLM 模式
+            </span>
+          )}
         </h1>
         {lastRefCount > 0 && (
           <span className="text-xs text-gray-400">上次引用了 {lastRefCount} 条笔记</span>
         )}
       </div>
+
+      {providerWarning && (
+        <div className="mb-3 rounded-lg px-3 py-2 text-xs bg-amber-50 text-amber-800 border border-amber-200">
+          <div className="font-medium mb-0.5">AI Provider 调用失败，已回退到启发式匹配</div>
+          <div className="text-amber-700 font-mono break-all">{providerWarning}</div>
+          <div className="mt-1 text-amber-600">
+            请检查
+            <a href="/settings" className="underline ml-1">AI 配置</a>
+            （base URL / token / 协议模式 / 网络）
+          </div>
+        </div>
+      )}
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 mb-4">
         {messages.length === 0 ? (

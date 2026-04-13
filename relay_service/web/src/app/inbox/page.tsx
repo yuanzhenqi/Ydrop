@@ -9,6 +9,7 @@ import { archiveNote, trashNote, triggerAiAnalysis } from '@/lib/api'
 import { NoteCard } from '@/components/notes/NoteCard'
 import { QuickCapture } from '@/components/notes/QuickCapture'
 import { SearchBar } from '@/components/common/SearchBar'
+import { InboxSidebar } from '@/components/inbox/InboxSidebar'
 import { Inbox, Keyboard } from 'lucide-react'
 
 export default function InboxPage() {
@@ -93,66 +94,78 @@ export default function InboxPage() {
   }, [selectedIdx, notes])
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold flex items-center gap-2">
-          <Inbox className="w-5 h-5" /> 收件箱
-        </h1>
-        <div className="flex items-center gap-3 text-sm text-gray-400">
-          <span>{notes.length} 条</span>
-          <button
-            onClick={() => setShowHelp((s) => !s)}
-            title="键盘快捷键"
-            className="p-1 rounded hover:bg-gray-100"
-          >
-            <Keyboard className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+    <div className="max-w-[1200px] mx-auto px-4 py-6">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        {/* 主内容区 */}
+        <div className="space-y-4 min-w-0">
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold flex items-center gap-2">
+              <Inbox className="w-5 h-5" /> 收件箱
+            </h1>
+            <div className="flex items-center gap-3 text-sm text-gray-400">
+              <span>{notes.length} 条</span>
+              <button
+                onClick={() => setShowHelp((s) => !s)}
+                title="键盘快捷键"
+                className="p-1 rounded hover:bg-gray-100"
+              >
+                <Keyboard className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
 
-      {showHelp && (
-        <div className="bg-gray-50 border rounded-xl p-3 text-xs space-y-1 text-gray-600">
-          <div className="font-semibold text-gray-700 mb-1">键盘快捷键</div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">j</kbd> / <kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">k</kbd> 上下选择</span>
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">e</kbd> 编辑</span>
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">a</kbd> 归档</span>
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">d</kbd> 删除</span>
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">/</kbd> 搜索</span>
-            <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">Esc</kbd> 取消</span>
+          {showHelp && (
+            <div className="bg-gray-50 border rounded-xl p-3 text-xs space-y-1 text-gray-600">
+              <div className="font-semibold text-gray-700 mb-1">键盘快捷键</div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">j</kbd> / <kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">k</kbd> 上下选择</span>
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">e</kbd> 编辑</span>
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">a</kbd> 归档</span>
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">d</kbd> 删除</span>
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">/</kbd> 搜索</span>
+                <span><kbd className="px-1.5 py-0.5 bg-white border rounded text-xs">Esc</kbd> 取消</span>
+              </div>
+            </div>
+          )}
+
+          <QuickCapture onSaved={() => mutate()} />
+          <SearchBar inputRef={searchInputRef} />
+
+          {isLoading ? (
+            <div className="text-center text-gray-400 py-12">加载中...</div>
+          ) : notes.length === 0 ? (
+            <div className="text-center text-gray-400 py-12">
+              {searchQuery || categoryFilter || tagFilter ? '没有匹配的记录' : '收件箱为空，开始记录吧'}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {notes.map((note, idx) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  section="inbox"
+                  selected={idx === selectedIdx}
+                  onEdit={(id) => router.push(`/note?id=${id}`)}
+                  onArchive={(id) => handleAction(() => archiveNote(id))}
+                  onTrash={(id) => handleAction(() => trashNote(id))}
+                  onCopy={(id) => {
+                    const n = notes.find((n) => n.id === id)
+                    if (n) navigator.clipboard.writeText(n.content)
+                  }}
+                  onAiAnalyze={(id) => handleAction(() => triggerAiAnalysis(id))}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 右侧边栏 - 宽屏才显示 */}
+        <div className="hidden xl:block">
+          <div className="sticky top-6">
+            <InboxSidebar notes={notes} />
           </div>
         </div>
-      )}
-
-      <QuickCapture onSaved={() => mutate()} />
-      <SearchBar inputRef={searchInputRef} />
-
-      {isLoading ? (
-        <div className="text-center text-gray-400 py-12">加载中...</div>
-      ) : notes.length === 0 ? (
-        <div className="text-center text-gray-400 py-12">
-          {searchQuery ? '没有匹配的记录' : '收件箱为空，开始记录吧'}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {notes.map((note, idx) => (
-            <NoteCard
-              key={note.id}
-              note={note}
-              section="inbox"
-              selected={idx === selectedIdx}
-              onEdit={(id) => router.push(`/note?id=${id}`)}
-              onArchive={(id) => handleAction(() => archiveNote(id))}
-              onTrash={(id) => handleAction(() => trashNote(id))}
-              onCopy={(id) => {
-                const n = notes.find((n) => n.id === id)
-                if (n) navigator.clipboard.writeText(n.content)
-              }}
-              onAiAnalyze={(id) => handleAction(() => triggerAiAnalysis(id))}
-            />
-          ))}
-        </div>
-      )}
+      </div>
     </div>
   )
 }
