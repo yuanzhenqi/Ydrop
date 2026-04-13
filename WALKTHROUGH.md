@@ -524,3 +524,121 @@ Next.js 14 App Router（静态导出）+ Tailwind CSS + SWR + Zustand + lucide-r
 - [ ] 左侧导航 Inbox/Archive/Trash/Calendar/Settings 路由正常
 - [ ] WebDAV 配置后 5 分钟内自动同步触发
 - [ ] 手动 `POST /api/sync/trigger` 返回状态，日志中有 PUSHED/PULLED 记录
+
+---
+
+## 里程碑 I — Web 端 Phase A/B/C 全套（2026-04-13）
+
+里程碑 H 打完 Web 端基础架构后，这一轮把五个阶段连成 pipeline 全部 ship：收尾合并、真实三端同步验证、AI 第二阶段、体验打磨、提醒增强。
+
+### Phase A — 收尾合并（PR #3）
+
+- `README.md` 重写：三端架构图、技术栈矩阵（Android / Web / 后端）、Android 和 Web 双端启动流程
+- `relay_service/run.sh`：一键启动脚本，自动检查 Python 3.11+、Node.js、构建前端、启动 uvicorn
+- `relay_service/.env.example`：补齐 SQLite / WebDAV / Static 等新增变量，中文注释
+- `WALKTHROUGH.md` 追加里程碑 H（Web 端完整走查）
+
+### Phase B — 真实三端同步验证（PR #4）
+
+用 `rclone serve webdav` 起本地 8888 端口，配合 relay_service 跑了 6 轮端到端测试：
+
+1. Web 端创建笔记 → `pushed=1` → 远端出现 `inbox/<filename>.md` ✓
+2. 模拟 Android 推送（WebDAV PUT）→ `pulled=1` → SQLite 出现该笔记 ✓
+3. Web 端归档 → 文件从 `inbox/` 移到 `archive/` ✓
+4. 编辑 category/priority → colorToken 自动重算（URGENT→ROSE）+ 远端刷新 ✓
+5. 彻底删除 → tombstone → 远端文件清理 ✓
+6. Markdown frontmatter 中文标签 / 日期格式 / 文件命名 100% 与 Android 端兼容 ✓
+
+顺手修了一个 list API 的默认过滤 bug：`archived=None` 时应该默认排除而非包含，保持与 `trashed` 行为一致。
+
+### Phase C.1 — AI 问答 + 批量整理（PR #5）
+
+新增 `relay_service/app/routes_ai.py`：
+
+- **POST /api/ai/chat** — 基于笔记的问答
+  - 支持筛选：`category`、`priority`、`tag`、时间范围、是否包含归档
+  - 加载最近 N 条匹配笔记作为 LLM context
+  - 系统提示词明确要求「只基于笔记内容」「引用时用《标题》标注」「找不到就说明」
+  - 未配 provider 走启发式兜底：关键词匹配 + 最近笔记列表
+
+- **POST /api/ai/batch-organize** — 聚类分析
+  - 识别相似笔记建议合并、随手记集合建议转任务
+  - 返回 `clusters[] { cluster_id, theme, note_ids, suggested_action, suggested_title, reason }`
+  - action: `merge` / `convert_to_task` / `keep`
+  - 启发式兜底：按标签分组 + 按 NOTE 分类聚合
+
+Web 端新增两页：
+
+- **`/chat`** — 对话界面，快捷问题模板（"这周的待办" / "紧急任务" 等），实时引用笔记数
+- **`/organize`** — 聚类卡片展示，「应用」按钮：
+  - `convert_to_task`：批量把笔记 category 改为 TASK
+  - `merge`：拉取所有笔记内容合并到第一条并更新标题
+
+### Phase C.3 — Web 端体验打磨（PR #6）
+
+三件套：
+
+1. **键盘快捷键**（inbox 页）
+   - `j/k` 上下选择 / `e` 编辑 / `a` 归档 / `d` 删除 / `/` 聚焦搜索 / `?` 显示帮助 / `Esc` 取消
+   - 新增 `useKeyboardShortcuts` hook，输入框聚焦时自动不触发
+   - NoteCard 加选中态 `ring-1 ring-emerald-100 border-emerald-400`
+   - 选中时自动滚动到视野内
+
+2. **标签管理 `/tags`**
+   - 标签云：按使用频率动态缩放字号（xl/lg/base/sm）
+   - 完整列表 + 计数 + 重命名（批量更新所有关联笔记，去重合并）
+   - 点击标签直接跳转 inbox 并套用筛选
+
+3. **Markdown 预览**
+   - 引入 `react-markdown` + `remark-gfm`
+   - 新增 `MarkdownView` 组件，统一样式（标题、列表、代码块、引用、任务列表）
+   - NoteCard 展开时用 MarkdownView 渲染内容，收起时仍然显示纯文本预览
+
+### Phase C.2 — 提醒自定义时间 + 重复规则（PR #7）
+
+这个阶段 Android 端因为涉及 Room migration 14→15 + AlarmManager 重复调度，风险较大，放到下一轮真机回归窗口。这一轮先把后端和 Web 端打通。
+
+**数据库**：
+
+- `reminders` 表新增 `recurrence TEXT` 字段（可空）
+- 有效值：`DAILY / WEEKDAYS / WEEKLY / MONTHLY / null`
+- 新增 `_migrate()` 幂等迁移：`PRAGMA table_info` 检查后 `ALTER TABLE ADD COLUMN`，对已存在的 DB 无损
+
+**API**：
+
+- `POST /api/reminders` 接受 `recurrence` 参数
+- `ReminderResponse` 返回该字段
+
+**Web 端**：
+
+- 新增 `ReminderForm` 组件：
+  - `<input type="date">` + `<input type="time">` 原生选择器
+  - 5 种重复规则按 chip 排列：`一次 / 每天 / 工作日 / 每周 / 每月`
+  - 模态弹窗，Enter 提交 / Esc 取消
+- 日历页头部新增「新建提醒」按钮，默认挂到当前选中日期上
+- 日议程每条提醒：有 recurrence 时显示 `🔁 每周` 样式的 chip
+
+### 关键决策
+
+- **Phase 拆分顺序**：A（合并）→ B（验证）→ C.1（AI，价值大）→ C.3（纯前端，低风险）→ C.2（跨端，风险大），避免连续动 Android 端。
+- **启发式兜底**：AI 接口未配 provider 时不报错，返回可用信息（笔记列表、标签聚类）——降低部署门槛。
+- **重复规则用枚举字符串**：`DAILY/WEEKLY/MONTHLY/WEEKDAYS` 而非完整 RFC 5545 RRULE，产品层够用，后续需要再演进。
+- **Android migration 推迟**：Web 端率先完成自定义时间 + 重复规则，跨端同步兼容性（Markdown frontmatter 暂不包含 recurrence）——后续 Android 迁移时再决定是否把 recurrence 写进 frontmatter。
+
+### 遗留 / 待办
+
+- Android 端自定义时间选择器、重复规则 Room schema、AlarmManager 重复调度（下一轮真机）
+- WebDAV Markdown frontmatter 是否应该包含 recurrence 字段（跨端同步）
+- AI 批量整理的 `merge` 操作暂未删除被合并的源笔记（保守策略，避免误合）
+- 图片附件支持尚未实现
+
+### 手动回归清单
+
+- [ ] `run.sh` 在干净环境跑通（检查 venv、npm、静态产物）
+- [ ] `/chat` 发几个问题验证启发式和 provider 两种模式的应答
+- [ ] `/organize` 点「AI 分析我的笔记」→ 看到聚类卡片 → 点「应用」转任务成功
+- [ ] `/tags` 标签云按频率缩放正确，重命名后所有关联笔记同步改名
+- [ ] inbox 页用 `j/k/e/a/d//` 快捷键全流程操作无冲突
+- [ ] NoteCard 展开后 Markdown 代码块 / 列表 / 任务项 / 引用样式正确
+- [ ] 日历页新建提醒，选择「每周」，创建后列表里能看到 🔁 chip
+- [ ] 重启 relay 后 SQLite 老数据能自动迁移出 recurrence 字段（`_migrate()` 生效）
