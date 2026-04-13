@@ -4,11 +4,13 @@ import { useState } from 'react'
 import type { Note } from '@/lib/types'
 import { COLOR_MAP, CATEGORY_LABELS, PRIORITY_LABELS } from '@/lib/constants'
 import { formatTime } from '@/lib/date'
+import { MarkdownView } from '@/components/common/MarkdownView'
 import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface NoteCardProps {
   note: Note
   section: 'inbox' | 'archive' | 'trash'
+  selected?: boolean
   onEdit: (id: string) => void
   onArchive?: (id: string) => void
   onUnarchive?: (id: string) => void
@@ -19,15 +21,18 @@ interface NoteCardProps {
   onAiAnalyze?: (id: string) => void
 }
 
-export function NoteCard({ note, section, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze }: NoteCardProps) {
+export function NoteCard({ note, section, selected, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze }: NoteCardProps) {
   const [expanded, setExpanded] = useState(false)
   const color = COLOR_MAP[note.color_token] || COLOR_MAP.SAGE
 
   return (
     <div
-      className="bg-white rounded-2xl border border-gray-100 overflow-hidden transition-shadow hover:shadow-sm cursor-pointer"
+      className={`bg-white rounded-2xl border overflow-hidden transition-all hover:shadow-sm cursor-pointer ${
+        selected ? 'border-emerald-400 ring-1 ring-emerald-100' : 'border-gray-100'
+      }`}
       style={{ borderLeftWidth: 4, borderLeftColor: color.border }}
       onClick={() => setExpanded(!expanded)}
+      data-note-id={note.id}
     >
       <div className="px-4 py-3 space-y-2">
         {/* Header */}
@@ -38,9 +43,11 @@ export function NoteCard({ note, section, onEdit, onArchive, onUnarchive, onTras
         </div>
 
         {/* Preview */}
-        <p className={`text-sm text-gray-500 ${expanded ? '' : 'line-clamp-2'}`}>
-          {note.content}
-        </p>
+        {expanded ? (
+          <MarkdownView content={note.content} />
+        ) : (
+          <p className="text-sm text-gray-500 line-clamp-2">{note.content}</p>
+        )}
 
         {/* Pills */}
         <div className="flex items-center gap-1.5 flex-wrap">
