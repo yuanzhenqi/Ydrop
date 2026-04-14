@@ -5,18 +5,23 @@ import { useRouter } from 'next/navigation'
 import { useNotes } from '@/hooks/useNotes'
 import { useAppStore } from '@/store'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
-import { archiveNote, trashNote, triggerAiAnalysis } from '@/lib/api'
+import { archiveNote, trashNote, triggerAiAnalysis, fetchSuggestions } from '@/lib/api'
+import type { AiSuggestion } from '@/lib/types'
 import { NoteCard } from '@/components/notes/NoteCard'
 import { QuickCapture } from '@/components/notes/QuickCapture'
 import { SearchBar } from '@/components/common/SearchBar'
 import { InboxSidebar } from '@/components/inbox/InboxSidebar'
+import { useToast } from '@/components/common/Toast'
 import { Inbox, Keyboard } from 'lucide-react'
 
 export default function InboxPage() {
   const router = useRouter()
+  const { toast } = useToast()
   const { searchQuery, categoryFilter, tagFilter, setSearchQuery } = useAppStore()
   const [selectedIdx, setSelectedIdx] = useState<number>(-1)
   const [showHelp, setShowHelp] = useState(false)
+  const [aiLoadingSet, setAiLoadingSet] = useState<Set<string>>(new Set())
+  const [suggestionsMap, setSuggestionsMap] = useState<Record<string, AiSuggestion | null>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const params: Record<string, string> = { trashed: 'false', archived: 'false' }
@@ -31,9 +36,45 @@ export default function InboxPage() {
     if (selectedIdx >= notes.length) setSelectedIdx(-1)
   }, [notes.length, selectedIdx])
 
+  // 初次加载时拉取每个笔记的最新 suggestion
+  useEffect(() => {
+    notes.forEach(async (n) => {
+      if (suggestionsMap[n.id] !== undefined) return
+      try {
+        const list = await fetchSuggestions(n.id)
+        setSuggestionsMap((prev) => ({ ...prev, [n.id]: list[0] || null }))
+      } catch {}
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes])
+
   const handleAction = async (action: () => Promise<unknown>) => {
     await action()
     mutate()
+  }
+
+  const handleAiAnalyze = async (noteId: string) => {
+    if (aiLoadingSet.has(noteId)) return
+    setAiLoadingSet((prev) => { const n = new Set(prev); n.add(noteId); return n })
+    try {
+      let s = await triggerAiAnalysis(noteId)
+      // 如果还在 RUNNING，轮询 3 次
+      for (let i = 0; i < 3 && s.status === 'RUNNING'; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        const list = await fetchSuggestions(noteId)
+        if (list.length > 0) s = list[0]
+      }
+      setSuggestionsMap((prev) => ({ ...prev, [noteId]: s }))
+      if (s.status === 'READY') {
+        toast('success', 'AI 整理完成')
+      } else if (s.status === 'FAILED') {
+        toast('error', `AI 整理失败：${s.error_message || '未知错误'}`)
+      }
+    } catch (e) {
+      toast('error', `AI 整理失败：${e instanceof Error ? e.message : e}`)
+    } finally {
+      setAiLoadingSet((prev) => { const n = new Set(prev); n.delete(noteId); return n })
+    }
   }
 
   const selectedNote = selectedIdx >= 0 ? notes[selectedIdx] : null
@@ -145,14 +186,19 @@ export default function InboxPage() {
                   note={note}
                   section="inbox"
                   selected={idx === selectedIdx}
+                  suggestion={suggestionsMap[note.id]}
+                  aiLoading={aiLoadingSet.has(note.id)}
                   onEdit={(id) => router.push(`/note?id=${id}`)}
-                  onArchive={(id) => handleAction(() => archiveNote(id))}
-                  onTrash={(id) => handleAction(() => trashNote(id))}
+                  onArchive={(id) => handleAction(async () => { await archiveNote(id); toast('success', '已归档') })}
+                  onTrash={(id) => handleAction(async () => { await trashNote(id); toast('success', '已移入回收站') })}
                   onCopy={(id) => {
                     const n = notes.find((n) => n.id === id)
-                    if (n) navigator.clipboard.writeText(n.content)
+                    if (n) {
+                      navigator.clipboard.writeText(n.content)
+                      toast('success', '已复制到剪贴板')
+                    }
                   }}
-                  onAiAnalyze={(id) => handleAction(() => triggerAiAnalysis(id))}
+                  onAiAnalyze={handleAiAnalyze}
                 />
               ))}
             </div>

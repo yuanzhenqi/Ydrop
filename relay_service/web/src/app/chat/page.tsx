@@ -178,7 +178,7 @@ export default function ChatPage() {
               </div>
             ) : (
               messages.map((m, i) => (
-                <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div key={i} className={`flex gap-2 animate-message-in ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {m.role === 'assistant' && (
                     <div className="w-7 h-7 rounded-full bg-purple-100 flex items-center justify-center flex-shrink-0">
                       <Sparkles className="w-4 h-4 text-purple-600" />
