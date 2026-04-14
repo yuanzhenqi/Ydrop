@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -20,6 +21,17 @@ from .models_notes import (
 )
 
 router = APIRouter(prefix="/api/notes", dependencies=[Depends(require_relay_token)])
+
+
+def _trigger_push(note_id: str) -> None:
+    """Fire-and-forget: 创建后台任务推送到 WebDAV。"""
+    from .sync_orchestrator import push_single_note
+    asyncio.create_task(push_single_note(note_id))
+
+
+def _trigger_delete_remote(note_id: str) -> None:
+    from .sync_orchestrator import delete_remote_by_id
+    asyncio.create_task(delete_remote_by_id(note_id))
 
 
 def _row_to_note(row) -> NoteResponse:
@@ -132,6 +144,8 @@ async def create_note(body: NoteCreate):
     )
     await db.commit()
 
+    _trigger_push(note_id)
+
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -178,6 +192,8 @@ async def update_note(note_id: str, body: NoteUpdate):
     await db.execute(f"UPDATE notes SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
 
+    _trigger_push(note_id)
+
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -193,6 +209,7 @@ async def archive_note(note_id: str):
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
+    _trigger_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -208,6 +225,7 @@ async def unarchive_note(note_id: str):
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
+    _trigger_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -223,6 +241,8 @@ async def trash_note(note_id: str):
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
+    # trashed 的笔记，push_single_note 内部会识别并走 delete 分支
+    _trigger_delete_remote(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -238,6 +258,7 @@ async def restore_note(note_id: str):
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
+    _trigger_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -246,11 +267,32 @@ async def restore_note(note_id: str):
 async def delete_note_permanently(note_id: str):
     db = await get_db()
     now = int(time.time() * 1000)
+    # 先记住 remote_path 再删 notes
+    rows = await db.execute_fetchall("SELECT remote_path FROM notes WHERE id = ?", [note_id])
+    remote_path = rows[0]["remote_path"] if rows else None
     await db.execute("DELETE FROM notes WHERE id = ?", [note_id])
     await db.execute("DELETE FROM ai_suggestions WHERE note_id = ?", [note_id])
     await db.execute("DELETE FROM reminders WHERE note_id = ?", [note_id])
     await db.execute("INSERT OR REPLACE INTO tombstones (note_id, deleted_at) VALUES (?, ?)", [note_id, now])
     await db.commit()
+    # 远端删除（在 notes 行已移除后，delete_remote_by_id 会走扫描兜底）
+    if remote_path:
+        # 直接删，不扫描
+        import asyncio as _asyncio
+        async def _del():
+            from .sync_orchestrator import WebDavClient
+            from . import settings_store
+            cfg = await settings_store.get_webdav_config()
+            if not cfg.get("base_url"):
+                return
+            client = await WebDavClient.from_store()
+            try:
+                await client.delete_path(remote_path)
+            except Exception:
+                pass
+            finally:
+                await client.close()
+        _asyncio.create_task(_del())
 
 
 @router.post("/{note_id}/ai-analyze", response_model=AiSuggestionResponse)

@@ -37,6 +37,7 @@ export function NoteCard({ note, section, selected, onEdit, onArchive, onUnarchi
       <div className="px-4 py-3 space-y-2">
         {/* Header */}
         <div className="flex items-center gap-2">
+          <SyncDot status={note.status} syncError={note.sync_error} />
           <span className="font-semibold text-sm flex-1 truncate">{note.title || '无标题'}</span>
           <span className="text-xs text-gray-400 whitespace-nowrap">{formatTime(note.updated_at)}</span>
           {expanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-400" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
@@ -96,6 +97,22 @@ export function NoteCard({ note, section, selected, onEdit, onArchive, onUnarchi
         )}
       </div>
     </div>
+  )
+}
+
+function SyncDot({ status, syncError }: { status: string; syncError?: string }) {
+  const map: Record<string, { color: string; label: string; pulse?: boolean }> = {
+    SYNCED: { color: 'bg-emerald-500', label: '已同步' },
+    SYNCING: { color: 'bg-blue-500', label: '同步中...', pulse: true },
+    LOCAL_ONLY: { color: 'bg-gray-300', label: '待同步' },
+    FAILED: { color: 'bg-red-500', label: syncError || '同步失败' },
+  }
+  const s = map[status] || map.LOCAL_ONLY
+  return (
+    <span
+      className={`w-2 h-2 rounded-full flex-shrink-0 ${s.color} ${s.pulse ? 'animate-pulse' : ''}`}
+      title={s.label}
+    />
   )
 }
 

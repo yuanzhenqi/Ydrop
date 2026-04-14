@@ -1,15 +1,35 @@
 'use client'
 
-import { useState } from 'react'
-import { aiBatchOrganize, fetchNote, updateNote } from '@/lib/api'
-import type { ClusterSuggestion } from '@/lib/api'
-import { FolderCog, Sparkles, Check, X, Merge, ArrowRight } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import {
+  aiBatchOrganize,
+  fetchNote,
+  updateNote,
+  fetchOrganizeRuns,
+  fetchOrganizeRun,
+  deleteOrganizeRun,
+} from '@/lib/api'
+import type { ClusterSuggestion, OrganizeRunSummary } from '@/lib/api'
+import { formatTime } from '@/lib/date'
+import { FolderCog, Sparkles, Check, X, Merge, ArrowRight, History, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 
 export default function OrganizePage() {
   const [clusters, setClusters] = useState<ClusterSuggestion[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [applied, setApplied] = useState<Set<string>>(new Set())
+  const [runs, setRuns] = useState<OrganizeRunSummary[]>([])
+  const [showHistory, setShowHistory] = useState(false)
+
+  const loadRuns = useCallback(async () => {
+    try {
+      setRuns(await fetchOrganizeRuns())
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    loadRuns()
+  }, [loadRuns])
 
   const handleAnalyze = async () => {
     setLoading(true)
@@ -18,9 +38,24 @@ export default function OrganizePage() {
       setClusters(res.clusters)
       setTotal(res.total_analyzed)
       setApplied(new Set())
+      await loadRuns()
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLoadRun = async (id: string) => {
+    const r = await fetchOrganizeRun(id)
+    setClusters(r.clusters)
+    setTotal(r.total_analyzed)
+    setApplied(new Set(r.applied_cluster_ids))
+  }
+
+  const handleDeleteRun = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('删除这条历史记录？')) return
+    await deleteOrganizeRun(id)
+    await loadRuns()
   }
 
   const handleApply = async (cluster: ClusterSuggestion) => {
@@ -69,6 +104,47 @@ export default function OrganizePage() {
       {total > 0 && (
         <p className="text-sm text-gray-500">分析了 {total} 条收件箱笔记，识别出 {clusters.length} 组聚类</p>
       )}
+
+      {/* 历史折叠面板 */}
+      <div className="bg-white rounded-2xl border">
+        <button
+          onClick={() => setShowHistory((s) => !s)}
+          className="w-full flex items-center gap-2 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50"
+        >
+          {showHistory ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          <History className="w-4 h-4" />
+          历史整理记录
+          <span className="ml-auto text-xs text-gray-400">{runs.length} 条</span>
+        </button>
+        {showHistory && (
+          <div className="border-t px-2 py-2 space-y-1 max-h-60 overflow-y-auto">
+            {runs.length === 0 ? (
+              <p className="text-xs text-gray-400 text-center py-3">暂无历史</p>
+            ) : (
+              runs.map((r) => (
+                <div
+                  key={r.id}
+                  onClick={() => handleLoadRun(r.id)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-gray-50 cursor-pointer text-sm group"
+                >
+                  <div className="flex-1">
+                    <div className="text-xs text-gray-400">{formatTime(r.created_at)}</div>
+                    <div className="text-sm text-gray-700">
+                      分析 {r.total_analyzed} 条 · {r.cluster_count} 组聚类
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => handleDeleteRun(r.id, e)}
+                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
       {clusters.length === 0 && !loading && (
         <div className="text-center py-16 text-gray-400">

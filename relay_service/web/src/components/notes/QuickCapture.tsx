@@ -1,31 +1,55 @@
 'use client'
 
-import { useState } from 'react'
-import { Send, ChevronDown } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Send } from 'lucide-react'
 import { createNote } from '@/lib/api'
-import { CATEGORIES, PRIORITIES, CATEGORY_LABELS, PRIORITY_LABELS } from '@/lib/constants'
+import { CATEGORIES, PRIORITIES, CATEGORY_LABELS, PRIORITY_LABELS, COLOR_MAP } from '@/lib/constants'
+import { useNotes } from '@/hooks/useNotes'
 import type { NoteCategory, NotePriority } from '@/lib/types'
+import { ChipGroup } from './ChipGroup'
+import { TagInput } from './TagInput'
 
 interface QuickCaptureProps {
   onSaved: () => void
+}
+
+const CATEGORY_COLOR: Record<NoteCategory, string> = {
+  NOTE: COLOR_MAP.SAGE.border,
+  TODO: COLOR_MAP.AMBER.border,
+  TASK: COLOR_MAP.SKY.border,
+  REMINDER: COLOR_MAP.ROSE.border,
+}
+
+const PRIORITY_COLOR: Record<NotePriority, string> = {
+  LOW: '#9ca3af',
+  MEDIUM: '#6b7280',
+  HIGH: '#f59e0b',
+  URGENT: '#ef4444',
 }
 
 export function QuickCapture({ onSaved }: QuickCaptureProps) {
   const [content, setContent] = useState('')
   const [category, setCategory] = useState<NoteCategory>('NOTE')
   const [priority, setPriority] = useState<NotePriority>('MEDIUM')
-  const [tags, setTags] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [expanded, setExpanded] = useState(false)
+
+  // 从已有笔记聚合标签用作自动补全
+  const { notes } = useNotes({ trashed: 'false' })
+  const existingTags = useMemo(() => {
+    const s = new Set<string>()
+    notes.forEach((n) => n.tags.forEach((t) => s.add(t)))
+    return Array.from(s).sort()
+  }, [notes])
 
   const handleSave = async () => {
     if (!content.trim() || saving) return
     setSaving(true)
     try {
-      const tagList = tags.split(/[,，\s]+/).filter(Boolean)
-      await createNote({ content: content.trim(), category, priority, tags: tagList })
+      await createNote({ content: content.trim(), category, priority, tags })
       setContent('')
-      setTags('')
+      setTags([])
       setExpanded(false)
       onSaved()
     } catch (e) {
@@ -49,31 +73,34 @@ export function QuickCapture({ onSaved }: QuickCaptureProps) {
         }}
       />
       {expanded && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value as NoteCategory)}
-            className="text-xs border rounded-lg px-2 py-1 bg-gray-50"
-          >
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>
-            ))}
-          </select>
-          <select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value as NotePriority)}
-            className="text-xs border rounded-lg px-2 py-1 bg-gray-50"
-          >
-            {PRIORITIES.map((p) => (
-              <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
-            ))}
-          </select>
-          <input
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="标签（逗号分隔）"
-            className="text-xs border rounded-lg px-2 py-1 flex-1 min-w-[120px] bg-gray-50"
-          />
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0">类型</span>
+            <ChipGroup<NoteCategory>
+              options={CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABELS[c], color: CATEGORY_COLOR[c] }))}
+              value={category}
+              onChange={setCategory}
+            />
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0">优先级</span>
+            <ChipGroup<NotePriority>
+              options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABELS[p], color: PRIORITY_COLOR[p] }))}
+              value={priority}
+              onChange={setPriority}
+            />
+          </div>
+          <div className="flex items-start gap-3">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0 pt-1.5">标签</span>
+            <div className="flex-1">
+              <TagInput
+                value={tags}
+                onChange={setTags}
+                suggestions={existingTags}
+                placeholder="输入标签，回车/逗号确认"
+              />
+            </div>
+          </div>
         </div>
       )}
       <div className="flex justify-between items-center">

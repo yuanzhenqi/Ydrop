@@ -118,13 +118,77 @@ export interface ChatResponse {
   referenced_count: number
   provider_error?: string
   used_provider?: boolean
+  session_id?: string
+  session_title?: string
 }
 
-export async function aiChat(messages: ChatMessage[], filter?: ChatFilter): Promise<ChatResponse> {
+export async function aiChat(messages: ChatMessage[], filter?: ChatFilter, sessionId?: string | null): Promise<ChatResponse> {
   return request<ChatResponse>('/api/ai/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages, filter }),
+    body: JSON.stringify({ messages, filter, session_id: sessionId || null }),
   })
+}
+
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  created_at: number
+  updated_at: number
+  message_count: number
+}
+
+export interface ChatSessionDetail {
+  id: string
+  title: string
+  created_at: number
+  updated_at: number
+  messages: {
+    role: string
+    content: string
+    referenced_note_ids: string[]
+    provider_error?: string
+    used_provider: boolean
+    created_at: number
+  }[]
+}
+
+export async function fetchChatSessions(): Promise<ChatSessionSummary[]> {
+  return request<ChatSessionSummary[]>('/api/ai/sessions')
+}
+
+export async function fetchChatSession(id: string): Promise<ChatSessionDetail> {
+  return request<ChatSessionDetail>(`/api/ai/sessions/${id}`)
+}
+
+export async function deleteChatSession(id: string): Promise<void> {
+  return request<void>(`/api/ai/sessions/${id}`, { method: 'DELETE' })
+}
+
+export interface OrganizeRunSummary {
+  id: string
+  total_analyzed: number
+  cluster_count: number
+  created_at: number
+}
+
+export interface OrganizeRunDetail {
+  id: string
+  total_analyzed: number
+  clusters: ClusterSuggestion[]
+  applied_cluster_ids: string[]
+  created_at: number
+}
+
+export async function fetchOrganizeRuns(): Promise<OrganizeRunSummary[]> {
+  return request<OrganizeRunSummary[]>('/api/ai/organize-runs')
+}
+
+export async function fetchOrganizeRun(id: string): Promise<OrganizeRunDetail> {
+  return request<OrganizeRunDetail>(`/api/ai/organize-runs/${id}`)
+}
+
+export async function deleteOrganizeRun(id: string): Promise<void> {
+  return request<void>(`/api/ai/organize-runs/${id}`, { method: 'DELETE' })
 }
 
 export interface ClusterSuggestion {

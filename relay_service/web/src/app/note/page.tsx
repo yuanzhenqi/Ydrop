@@ -1,12 +1,29 @@
 'use client'
 
-import { useEffect, useState, Suspense } from 'react'
+import { useEffect, useMemo, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { fetchNote, updateNote, fetchSuggestions, triggerAiAnalysis, archiveNote, trashNote } from '@/lib/api'
+import { useNotes } from '@/hooks/useNotes'
 import { CATEGORIES, PRIORITIES, CATEGORY_LABELS, PRIORITY_LABELS, COLOR_MAP } from '@/lib/constants'
 import { formatTime } from '@/lib/date'
 import type { Note, AiSuggestion, NoteCategory, NotePriority } from '@/lib/types'
-import { ArrowLeft, Save, Sparkles, Archive, Trash2 } from 'lucide-react'
+import { ArrowLeft, Save, Sparkles, Archive, Trash2, Loader2, XCircle } from 'lucide-react'
+import { ChipGroup } from '@/components/notes/ChipGroup'
+import { TagInput } from '@/components/notes/TagInput'
+
+const CATEGORY_COLOR: Record<NoteCategory, string> = {
+  NOTE: COLOR_MAP.SAGE.border,
+  TODO: COLOR_MAP.AMBER.border,
+  TASK: COLOR_MAP.SKY.border,
+  REMINDER: COLOR_MAP.ROSE.border,
+}
+
+const PRIORITY_COLOR: Record<NotePriority, string> = {
+  LOW: '#9ca3af',
+  MEDIUM: '#6b7280',
+  HIGH: '#f59e0b',
+  URGENT: '#ef4444',
+}
 
 function NoteDetailInner() {
   const searchParams = useSearchParams()
@@ -16,9 +33,18 @@ function NoteDetailInner() {
   const [content, setContent] = useState('')
   const [category, setCategory] = useState<NoteCategory>('NOTE')
   const [priority, setPriority] = useState<NotePriority>('MEDIUM')
-  const [tags, setTags] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [suggestion, setSuggestion] = useState<AiSuggestion | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
+
+  const { notes: allNotes } = useNotes({ trashed: 'false' })
+  const existingTags = useMemo(() => {
+    const s = new Set<string>()
+    allNotes.forEach((n) => n.tags.forEach((t) => s.add(t)))
+    return Array.from(s).sort()
+  }, [allNotes])
 
   useEffect(() => {
     if (!id) return
@@ -27,7 +53,7 @@ function NoteDetailInner() {
       setContent(n.content)
       setCategory(n.category)
       setPriority(n.priority)
-      setTags(n.tags.join(', '))
+      setTags(n.tags)
     })
     fetchSuggestions(id).then((s) => {
       if (s.length > 0) setSuggestion(s[0])
@@ -38,8 +64,7 @@ function NoteDetailInner() {
     if (!id || saving) return
     setSaving(true)
     try {
-      const tagList = tags.split(/[,，\s]+/).filter(Boolean)
-      const updated = await updateNote(id, { content, category, priority, tags: tagList })
+      const updated = await updateNote(id, { content, category, priority, tags })
       setNote(updated)
     } finally {
       setSaving(false)
@@ -47,9 +72,28 @@ function NoteDetailInner() {
   }
 
   const handleAi = async () => {
-    if (!id) return
-    const s = await triggerAiAnalysis(id)
-    setSuggestion(s)
+    if (!id || aiLoading) return
+    setAiLoading(true)
+    setAiError(null)
+    try {
+      const s = await triggerAiAnalysis(id)
+      setSuggestion(s)
+      // 如果仍在 RUNNING 状态（一般已 READY），轮询 3 次
+      if (s.status === 'RUNNING') {
+        for (let i = 0; i < 3; i++) {
+          await new Promise((r) => setTimeout(r, 2000))
+          const latest = await fetchSuggestions(id)
+          if (latest.length > 0) {
+            setSuggestion(latest[0])
+            if (latest[0].status !== 'RUNNING') break
+          }
+        }
+      }
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAiLoading(false)
+    }
   }
 
   if (!id) return <div className="flex items-center justify-center h-full text-gray-400">缺少笔记 ID</div>
@@ -76,19 +120,29 @@ function NoteDetailInner() {
           className="w-full resize-none text-sm outline-none"
         />
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <select value={category} onChange={(e) => setCategory(e.target.value as NoteCategory)} className="text-xs border rounded-lg px-2 py-1 bg-gray-50">
-            {CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-          </select>
-          <select value={priority} onChange={(e) => setPriority(e.target.value as NotePriority)} className="text-xs border rounded-lg px-2 py-1 bg-gray-50">
-            {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
-          </select>
-          <input
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            placeholder="标签"
-            className="text-xs border rounded-lg px-2 py-1 flex-1 min-w-[100px] bg-gray-50"
-          />
+        <div className="space-y-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0">类型</span>
+            <ChipGroup<NoteCategory>
+              options={CATEGORIES.map((c) => ({ value: c, label: CATEGORY_LABELS[c], color: CATEGORY_COLOR[c] }))}
+              value={category}
+              onChange={setCategory}
+            />
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0">优先级</span>
+            <ChipGroup<NotePriority>
+              options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABELS[p], color: PRIORITY_COLOR[p] }))}
+              value={priority}
+              onChange={setPriority}
+            />
+          </div>
+          <div className="flex items-start gap-3">
+            <span className="text-xs text-gray-500 w-10 flex-shrink-0 pt-1.5">标签</span>
+            <div className="flex-1">
+              <TagInput value={tags} onChange={setTags} suggestions={existingTags} />
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 pt-2 border-t">
@@ -96,8 +150,17 @@ function NoteDetailInner() {
             <Save className="w-3.5 h-3.5" />
             {saving ? '保存中...' : '保存'}
           </button>
-          <button onClick={handleAi} className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 text-purple-600 text-sm rounded-lg hover:bg-purple-100">
-            <Sparkles className="w-3.5 h-3.5" /> AI 整理
+          <button
+            onClick={handleAi}
+            disabled={aiLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 text-purple-600 text-sm rounded-lg hover:bg-purple-100 disabled:opacity-50"
+          >
+            {aiLoading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="w-3.5 h-3.5" />
+            )}
+            {aiLoading ? 'AI 分析中...' : 'AI 整理'}
           </button>
           <div className="flex-1" />
           <button onClick={async () => { await archiveNote(id); router.back() }} className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100">
@@ -107,6 +170,13 @@ function NoteDetailInner() {
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
+
+        {aiError && (
+          <div className="rounded-lg px-3 py-2 text-xs bg-red-50 text-red-700 border border-red-200 flex items-center gap-2">
+            <XCircle className="w-3.5 h-3.5" />
+            AI 整理失败：{aiError}
+          </div>
+        )}
       </div>
 
       {suggestion && suggestion.status === 'READY' && (
@@ -131,6 +201,19 @@ function NoteDetailInner() {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {suggestion && suggestion.status === 'FAILED' && (
+        <div className="bg-red-50 rounded-2xl border border-red-200 p-4 text-sm text-red-700 space-y-2">
+          <div className="font-medium flex items-center gap-1.5">
+            <XCircle className="w-4 h-4" /> AI 整理失败
+          </div>
+          {suggestion.error_message && (
+            <div className="text-xs text-red-600 font-mono break-all">{suggestion.error_message}</div>
+          )}
+          <button onClick={handleAi} disabled={aiLoading} className="text-xs px-3 py-1 bg-red-100 hover:bg-red-200 rounded-lg">
+            重试
+          </button>
         </div>
       )}
       {suggestion && suggestion.status === 'RUNNING' && (

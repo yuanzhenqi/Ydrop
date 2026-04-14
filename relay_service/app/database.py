@@ -84,6 +84,34 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT,
     updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    referenced_note_ids TEXT,
+    provider_error TEXT,
+    used_provider INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session ON ai_chat_messages(session_id);
+
+CREATE TABLE IF NOT EXISTS ai_organize_runs (
+    id TEXT PRIMARY KEY,
+    total_analyzed INTEGER NOT NULL,
+    clusters_json TEXT NOT NULL,
+    applied_cluster_ids TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_organize_runs_created ON ai_organize_runs(created_at);
 """
 
 

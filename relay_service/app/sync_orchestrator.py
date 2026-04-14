@@ -97,25 +97,56 @@ async def sync_bidirectional() -> dict:
                         errors += 1
                     continue
 
+                # 正在推送中的笔记：跳过所有处理（避免竞态）
+                if local["status"] == "SYNCING":
+                    logger.debug("SKIP (SYNCING): %s", remote_id)
+                    continue
+
                 remote_updated = remote_note["updated_at"]
                 local_updated = local["updated_at"]
                 local_synced = local["last_synced_at"] or 0
                 http_last_mod = rfi.last_modified or 0
+                local_tags = json.loads(local["tags_json"] or "[]")
 
                 remote_changed = (
                     remote_note["content"] != local["content"]
                     or remote_note["title"] != local["title"]
                     or remote_note["category"] != local["category"]
                     or remote_note["priority"] != local["priority"]
+                    or remote_note["color_token"] != local["color_token"]
                     or remote_note["is_archived"] != bool(local["is_archived"])
                     or rfi.path != local["remote_path"]
+                    or sorted(remote_note.get("tags", [])) != sorted(local_tags)
                 )
 
-                if http_last_mod > local_synced or remote_updated > local_updated:
+                local_has_unsynced_changes = local["status"] in ("LOCAL_ONLY", "FAILED")
+                remote_is_newer = http_last_mod > local_synced or remote_updated > local_updated
+
+                if remote_is_newer and not local_has_unsynced_changes:
+                    # 远端新 + 本地已同步 → 安全拉取
                     if remote_changed:
                         await _upsert_from_remote(db, remote_note, rfi.path)
                         pulled += 1
                         logger.info("PULLED id=%s", remote_id)
+                elif remote_is_newer and local_has_unsynced_changes:
+                    # 两边都改 → 按 updated_at 判决
+                    if remote_updated > local_updated:
+                        logger.warning(
+                            "CONFLICT (remote wins): id=%s remote_updated=%s local_updated=%s local_status=%s",
+                            remote_id, remote_updated, local_updated, local["status"],
+                        )
+                        if remote_changed:
+                            await _upsert_from_remote(db, remote_note, rfi.path)
+                            pulled += 1
+                    else:
+                        logger.warning(
+                            "CONFLICT (local wins): id=%s local_updated=%s remote_updated=%s",
+                            remote_id, local_updated, remote_updated,
+                        )
+                        if await _push_note(db, client, local):
+                            pushed += 1
+                        else:
+                            errors += 1
                 elif local_updated > remote_updated and local["status"] != "SYNCED":
                     if await _push_note(db, client, local):
                         pushed += 1
@@ -165,6 +196,74 @@ async def sync_bidirectional() -> dict:
 
     logger.info("Sync complete: pushed=%d pulled=%d errors=%d", pushed, pulled, errors)
     return get_sync_status()
+
+
+async def push_single_note(note_id: str) -> bool:
+    """即时推送单条笔记到 WebDAV。fire-and-forget 调用，不抛异常。"""
+    from . import settings_store
+    try:
+        cfg = await settings_store.get_webdav_config()
+        if not cfg.get("base_url") or not cfg.get("enabled", True):
+            return False
+        db = await get_db()
+        rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
+        if not rows:
+            return False
+        note = rows[0]
+        # trashed 的笔记走 delete 而非 push
+        if note["is_trashed"]:
+            return await delete_remote_by_id(note_id)
+        client = await WebDavClient.from_store()
+        try:
+            ok = await _push_note(db, client, note)
+            await db.commit()
+            return ok
+        finally:
+            await client.close()
+    except Exception as e:
+        logger.error("push_single_note(%s) failed: %s", note_id, e, exc_info=True)
+        return False
+
+
+async def delete_remote_by_id(note_id: str) -> bool:
+    """tombstone 后删除远端文件。fire-and-forget。"""
+    from . import settings_store
+    try:
+        cfg = await settings_store.get_webdav_config()
+        if not cfg.get("base_url"):
+            return False
+        db = await get_db()
+        # 从 tombstones 或 已删除 note 找 remote_path
+        rows = await db.execute_fetchall("SELECT remote_path FROM notes WHERE id = ?", [note_id])
+        remote_path = None
+        if rows and rows[0]["remote_path"]:
+            remote_path = rows[0]["remote_path"]
+        if not remote_path:
+            # 已从 notes 表删除，扫 WebDAV 找同 id 文件
+            client = await WebDavClient.from_store()
+            try:
+                files = await client.list_remote()
+                from .markdown_format import extract_id_from_filename
+                for f in files:
+                    fname = f.path.rsplit("/", 1)[-1]
+                    if extract_id_from_filename(fname) == note_id[-6:]:
+                        remote_path = f.path
+                        break
+            finally:
+                await client.close()
+        if not remote_path:
+            return False
+
+        client = await WebDavClient.from_store()
+        try:
+            await client.delete_path(remote_path)
+            logger.info("DELETED remote %s for id=%s", remote_path, note_id)
+            return True
+        finally:
+            await client.close()
+    except Exception as e:
+        logger.error("delete_remote_by_id(%s) failed: %s", note_id, e, exc_info=True)
+        return False
 
 
 async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
