@@ -52,8 +52,8 @@ export function ReminderForm({ noteId, initialDate, onClose, onCreated }: Remind
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl p-5 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-md space-y-4 animate-scale-in" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">新建提醒</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">

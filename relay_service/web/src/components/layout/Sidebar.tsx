@@ -30,12 +30,15 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all active:scale-[0.98] ${
                 active
                   ? 'bg-emerald-50 text-emerald-700 font-medium'
                   : 'text-gray-600 hover:bg-gray-100'
               }`}
             >
+              {active && (
+                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-emerald-600 animate-fade-in" />
+              )}
               <Icon className="w-4 h-4" />
               {label}
             </Link>

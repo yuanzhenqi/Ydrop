@@ -1,23 +1,29 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   aiBatchOrganize,
   fetchNote,
   updateNote,
+  trashNote,
   fetchOrganizeRuns,
   fetchOrganizeRun,
   deleteOrganizeRun,
 } from '@/lib/api'
 import type { ClusterSuggestion, OrganizeRunSummary } from '@/lib/api'
 import { formatTime } from '@/lib/date'
+import { useToast } from '@/components/common/Toast'
 import { FolderCog, Sparkles, Check, X, Merge, ArrowRight, History, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 
 export default function OrganizePage() {
+  const router = useRouter()
+  const { toast } = useToast()
   const [clusters, setClusters] = useState<ClusterSuggestion[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [applied, setApplied] = useState<Set<string>>(new Set())
+  const [applying, setApplying] = useState<Set<string>>(new Set())
   const [runs, setRuns] = useState<OrganizeRunSummary[]>([])
   const [showHistory, setShowHistory] = useState(false)
 
@@ -59,19 +65,42 @@ export default function OrganizePage() {
   }
 
   const handleApply = async (cluster: ClusterSuggestion) => {
-    if (cluster.suggested_action === 'convert_to_task') {
-      await Promise.all(
-        cluster.note_ids.map((id) => updateNote(id, { category: 'TASK' }))
-      )
-    } else if (cluster.suggested_action === 'merge' && cluster.suggested_title) {
-      const notes = await Promise.all(cluster.note_ids.map(fetchNote))
-      const merged = notes.map((n) => `## ${n.title}\n${n.content}`).join('\n\n---\n\n')
-      await updateNote(cluster.note_ids[0], {
-        title: cluster.suggested_title,
-        content: merged,
-      })
+    if (applying.has(cluster.cluster_id) || applied.has(cluster.cluster_id)) return
+    setApplying((prev) => { const n = new Set(prev); n.add(cluster.cluster_id); return n })
+    try {
+      if (cluster.suggested_action === 'convert_to_task') {
+        await Promise.all(
+          cluster.note_ids.map((id) => updateNote(id, { category: 'TASK' }))
+        )
+        toast('success', `${cluster.note_ids.length} 条笔记已转为任务`, {
+          label: '查看',
+          onClick: () => router.push('/inbox'),
+        })
+      } else if (cluster.suggested_action === 'merge' && cluster.suggested_title) {
+        const notes = await Promise.all(cluster.note_ids.map(fetchNote))
+        const merged = notes.map((n) => `## ${n.title}\n${n.content}`).join('\n\n---\n\n')
+        // 合并到第一条
+        await updateNote(cluster.note_ids[0], {
+          title: cluster.suggested_title,
+          content: merged,
+        })
+        // 被合并的其他笔记移入回收站
+        const others = cluster.note_ids.slice(1)
+        await Promise.all(others.map((id) => trashNote(id)))
+        toast('success', `已合并 ${cluster.note_ids.length} 条到「${cluster.suggested_title}」，原笔记已移入回收站`, {
+          label: '查看',
+          onClick: () => router.push('/inbox'),
+        })
+      } else {
+        toast('info', '此建议为"保持独立"，无需应用')
+        return
+      }
+      setApplied((prev) => { const next = new Set(prev); next.add(cluster.cluster_id); return next })
+    } catch (e) {
+      toast('error', `应用失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setApplying((prev) => { const n = new Set(prev); n.delete(cluster.cluster_id); return n })
     }
-    setApplied((prev) => { const next = new Set(prev); next.add(cluster.cluster_id); return next })
   }
 
   const actionLabels: Record<string, string> = {
@@ -189,13 +218,26 @@ export default function OrganizePage() {
                     <>
                       <button
                         onClick={() => handleApply(c)}
-                        className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700"
+                        disabled={applying.has(c.cluster_id)}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 active:scale-95 transition-transform disabled:opacity-50"
                       >
-                        <Check className="w-3 h-3" /> 应用
+                        {applying.has(c.cluster_id) ? (
+                          <>
+                            <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                              <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" className="opacity-75" />
+                            </svg>
+                            应用中...
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3 h-3" /> 应用
+                          </>
+                        )}
                       </button>
                       <button
                         onClick={() => setApplied((prev) => { const n = new Set(prev); n.add(c.cluster_id); return n })}
-                        className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 text-gray-600 text-xs rounded-lg hover:bg-gray-200"
+                        className="flex items-center gap-1.5 px-3 py-1 bg-gray-100 text-gray-600 text-xs rounded-lg hover:bg-gray-200 active:scale-95 transition-transform"
                       >
                         <X className="w-3 h-3" /> 忽略
                       </button>

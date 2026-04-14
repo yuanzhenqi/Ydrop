@@ -73,7 +73,7 @@ export function QuickCapture({ onSaved }: QuickCaptureProps) {
         }}
       />
       {expanded && (
-        <div className="space-y-2">
+        <div className="space-y-2 animate-slide-down-fade">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-xs text-gray-500 w-10 flex-shrink-0">类型</span>
             <ChipGroup<NoteCategory>
@@ -110,7 +110,7 @@ export function QuickCapture({ onSaved }: QuickCaptureProps) {
         <button
           onClick={handleSave}
           disabled={!content.trim() || saving}
-          className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+          className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 active:scale-95 disabled:opacity-50 transition-all"
         >
           <Send className="w-3.5 h-3.5" />
           {saving ? '保存中...' : '保存'}
