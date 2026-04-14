@@ -6,6 +6,7 @@ import { COLOR_MAP, CATEGORY_LABELS, PRIORITY_LABELS } from '@/lib/constants'
 import { formatTime } from '@/lib/date'
 import { MarkdownView } from '@/components/common/MarkdownView'
 import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { ReminderCandidateList } from '@/components/reminders/ReminderCandidateList'
 
 interface NoteCardProps {
   note: Note
@@ -100,6 +101,10 @@ export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdi
                   </div>
                 )}
               </div>
+            )}
+            {/* AI 提醒候选 */}
+            {hasSuggestion && suggestion!.reminder_candidates.length > 0 && (
+              <ReminderCandidateList noteId={note.id} candidates={suggestion!.reminder_candidates} compact />
             )}
             {suggestion?.status === 'FAILED' && (
               <div className="text-xs text-red-600 bg-red-50 px-2 py-1 rounded">

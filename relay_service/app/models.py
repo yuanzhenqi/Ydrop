@@ -40,6 +40,7 @@ class ReminderCandidateResponse(BaseModel):
     title: str
     scheduledAt: int
     reason: str | None = None
+    scheduledAtIso: str | None = None  # "YYYY-MM-DDTHH:mm" 在客户端时区
 
 
 class AiAnalyzeRequest(BaseModel):
