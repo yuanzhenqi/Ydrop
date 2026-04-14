@@ -42,6 +42,7 @@ class ChatFilter(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     filter: Optional[ChatFilter] = None
+    session_id: Optional[str] = None  # 空则创建新 session
 
 
 class ChatResponse(BaseModel):
@@ -50,6 +51,39 @@ class ChatResponse(BaseModel):
     referenced_count: int = 0
     provider_error: Optional[str] = None
     used_provider: bool = False
+    session_id: str = ""
+    session_title: str = ""
+
+
+class ChatSessionSummary(BaseModel):
+    id: str
+    title: str
+    created_at: int
+    updated_at: int
+    message_count: int
+
+
+class ChatSessionDetail(BaseModel):
+    id: str
+    title: str
+    created_at: int
+    updated_at: int
+    messages: list[dict]
+
+
+class OrganizeRunSummary(BaseModel):
+    id: str
+    total_analyzed: int
+    cluster_count: int
+    created_at: int
+
+
+class OrganizeRunDetail(BaseModel):
+    id: str
+    total_analyzed: int
+    clusters: list[dict]
+    applied_cluster_ids: list[str]
+    created_at: int
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -113,13 +147,117 @@ async def chat(body: ChatRequest):
     else:
         answer = _heuristic_chat_answer(body.messages, notes)
 
+    # ─── 持久化到 ai_chat_sessions / ai_chat_messages ───
+    import uuid as _uuid
+    now = int(time.time() * 1000)
+    session_id = body.session_id
+    session_title = ""
+
+    if not session_id:
+        # 新建会话：用第一条用户消息前 30 字作 title
+        first_user_msg = next((m.content for m in body.messages if m.role == "user"), "新会话")
+        session_title = first_user_msg.strip().replace("\n", " ")[:30]
+        session_id = str(_uuid.uuid4())
+        await db.execute(
+            "INSERT INTO ai_chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            [session_id, session_title, now, now],
+        )
+    else:
+        rows = await db.execute_fetchall("SELECT title FROM ai_chat_sessions WHERE id = ?", [session_id])
+        if not rows:
+            # session_id 无效，新建
+            first_user_msg = next((m.content for m in body.messages if m.role == "user"), "新会话")
+            session_title = first_user_msg.strip().replace("\n", " ")[:30]
+            await db.execute(
+                "INSERT INTO ai_chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                [session_id, session_title, now, now],
+            )
+        else:
+            session_title = rows[0]["title"] or ""
+            await db.execute("UPDATE ai_chat_sessions SET updated_at = ? WHERE id = ?", [now, session_id])
+
+    # 存 user 消息（取最后一条 user）+ assistant 回答
+    last_user = next((m for m in reversed(body.messages) if m.role == "user"), None)
+    if last_user:
+        await db.execute(
+            "INSERT INTO ai_chat_messages (id, session_id, role, content, used_provider, created_at) VALUES (?, ?, 'user', ?, 0, ?)",
+            [str(_uuid.uuid4()), session_id, last_user.content, now],
+        )
+    await db.execute(
+        """INSERT INTO ai_chat_messages (id, session_id, role, content, referenced_note_ids, provider_error, used_provider, created_at)
+           VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?)""",
+        [
+            str(_uuid.uuid4()), session_id, answer,
+            json.dumps([n["id"] for n in notes]),
+            provider_error, 1 if used_provider else 0, now + 1,
+        ],
+    )
+    await db.commit()
+
     return ChatResponse(
         answer=answer,
         referenced_note_ids=[n["id"] for n in notes],
         referenced_count=len(notes),
         provider_error=provider_error,
         used_provider=used_provider,
+        session_id=session_id,
+        session_title=session_title,
     )
+
+
+# ─── 会话管理端点 ───
+
+@router.get("/sessions", response_model=list[ChatSessionSummary])
+async def list_sessions():
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT s.id, s.title, s.created_at, s.updated_at,
+           (SELECT COUNT(*) FROM ai_chat_messages WHERE session_id = s.id) as msg_count
+           FROM ai_chat_sessions s ORDER BY s.updated_at DESC LIMIT 100"""
+    )
+    return [
+        ChatSessionSummary(
+            id=r["id"], title=r["title"] or "", created_at=r["created_at"],
+            updated_at=r["updated_at"], message_count=r["msg_count"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/sessions/{session_id}", response_model=ChatSessionDetail)
+async def get_session(session_id: str):
+    db = await get_db()
+    s_rows = await db.execute_fetchall("SELECT * FROM ai_chat_sessions WHERE id = ?", [session_id])
+    if not s_rows:
+        raise HTTPException(404, "Session not found")
+    s = s_rows[0]
+    m_rows = await db.execute_fetchall(
+        "SELECT role, content, referenced_note_ids, provider_error, used_provider, created_at FROM ai_chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+        [session_id],
+    )
+    messages = [
+        {
+            "role": m["role"],
+            "content": m["content"],
+            "referenced_note_ids": json.loads(m["referenced_note_ids"] or "[]"),
+            "provider_error": m["provider_error"],
+            "used_provider": bool(m["used_provider"]),
+            "created_at": m["created_at"],
+        }
+        for m in m_rows
+    ]
+    return ChatSessionDetail(
+        id=s["id"], title=s["title"] or "", created_at=s["created_at"],
+        updated_at=s["updated_at"], messages=messages,
+    )
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str):
+    db = await get_db()
+    await db.execute("DELETE FROM ai_chat_messages WHERE session_id = ?", [session_id])
+    await db.execute("DELETE FROM ai_chat_sessions WHERE id = ?", [session_id])
+    await db.commit()
 
 
 def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dict) -> str:
@@ -220,10 +358,60 @@ async def batch_organize(body: BatchOrganizeRequest):
         return BatchOrganizeResponse(total_analyzed=len(notes), clusters=[])
 
     from . import settings_store
+    import uuid as _uuid
     ai_cfg = await settings_store.get_ai_config()
     clusters = _call_organize_provider(notes, ai_cfg) if (ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]) else _heuristic_organize(notes)
 
+    # 持久化本次分析
+    run_id = str(_uuid.uuid4())
+    now = int(time.time() * 1000)
+    clusters_json = json.dumps([c.model_dump() for c in clusters], ensure_ascii=False)
+    await db.execute(
+        "INSERT INTO ai_organize_runs (id, total_analyzed, clusters_json, created_at) VALUES (?, ?, ?, ?)",
+        [run_id, len(notes), clusters_json, now],
+    )
+    await db.commit()
+
     return BatchOrganizeResponse(total_analyzed=len(notes), clusters=clusters)
+
+
+@router.get("/organize-runs", response_model=list[OrganizeRunSummary])
+async def list_organize_runs():
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT id, total_analyzed, clusters_json, created_at FROM ai_organize_runs ORDER BY created_at DESC LIMIT 50"
+    )
+    return [
+        OrganizeRunSummary(
+            id=r["id"], total_analyzed=r["total_analyzed"],
+            cluster_count=len(json.loads(r["clusters_json"] or "[]")),
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+@router.get("/organize-runs/{run_id}", response_model=OrganizeRunDetail)
+async def get_organize_run(run_id: str):
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT * FROM ai_organize_runs WHERE id = ?", [run_id])
+    if not rows:
+        raise HTTPException(404, "Run not found")
+    r = rows[0]
+    return OrganizeRunDetail(
+        id=r["id"],
+        total_analyzed=r["total_analyzed"],
+        clusters=json.loads(r["clusters_json"] or "[]"),
+        applied_cluster_ids=json.loads(r["applied_cluster_ids"] or "[]"),
+        created_at=r["created_at"],
+    )
+
+
+@router.delete("/organize-runs/{run_id}", status_code=204)
+async def delete_organize_run(run_id: str):
+    db = await get_db()
+    await db.execute("DELETE FROM ai_organize_runs WHERE id = ?", [run_id])
+    await db.commit()
 
 
 def _call_organize_provider(notes: list[dict], cfg: dict) -> list[ClusterSuggestion]:
