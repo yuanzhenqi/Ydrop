@@ -10,6 +10,7 @@ import type { Note, AiSuggestion, NoteCategory, NotePriority } from '@/lib/types
 import { ArrowLeft, Save, Sparkles, Archive, Trash2, Loader2, XCircle } from 'lucide-react'
 import { ChipGroup } from '@/components/notes/ChipGroup'
 import { TagInput } from '@/components/notes/TagInput'
+import { ReminderCandidateList } from '@/components/reminders/ReminderCandidateList'
 
 const CATEGORY_COLOR: Record<NoteCategory, string> = {
   NOTE: COLOR_MAP.SAGE.border,
@@ -194,12 +195,7 @@ function NoteDetailInner() {
             </div>
           )}
           {suggestion.reminder_candidates.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-gray-600 mb-1">提醒候选：</p>
-              {suggestion.reminder_candidates.map((r, i) => (
-                <p key={i} className="text-xs text-gray-600">{r.title} — {formatTime(r.scheduledAt)}</p>
-              ))}
-            </div>
+            <ReminderCandidateList noteId={id} candidates={suggestion.reminder_candidates} />
           )}
         </div>
       )}

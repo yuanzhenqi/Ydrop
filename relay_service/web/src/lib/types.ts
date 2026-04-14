@@ -111,7 +111,7 @@ export interface AiSuggestion {
   suggested_priority?: string
   todo_items: string[]
   extracted_entities: { label: string; value: string }[]
-  reminder_candidates: { title: string; scheduledAt: number; reason?: string }[]
+  reminder_candidates: { title: string; scheduledAt: number; reason?: string; scheduledAtIso?: string }[]
   error_message?: string
   created_at: number
   updated_at: number

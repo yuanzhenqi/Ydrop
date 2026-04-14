@@ -72,8 +72,14 @@ export async function deleteNotePermanently(id: string): Promise<void> {
 
 // ── AI ──
 
+import { getClientTimeContext } from './time'
+
 export async function triggerAiAnalysis(noteId: string): Promise<AiSuggestion> {
-  return request<AiSuggestion>(`/api/notes/${noteId}/ai-analyze`, { method: 'POST' })
+  const ctx = getClientTimeContext()
+  return request<AiSuggestion>(`/api/notes/${noteId}/ai-analyze`, {
+    method: 'POST',
+    body: JSON.stringify(ctx),
+  })
 }
 
 export async function fetchSuggestions(noteId: string): Promise<AiSuggestion[]> {
@@ -87,7 +93,7 @@ export async function fetchReminders(params: Record<string, string> = {}): Promi
   return request<ReminderListResponse>(`/api/reminders${qs ? `?${qs}` : ''}`)
 }
 
-export async function createReminder(data: { note_id: string; title: string; scheduled_at: number; recurrence?: string | null }): Promise<Reminder> {
+export async function createReminder(data: { note_id: string; title: string; scheduled_at: number; source?: string; recurrence?: string | null }): Promise<Reminder> {
   return request<Reminder>('/api/reminders', { method: 'POST', body: JSON.stringify(data) })
 }
 

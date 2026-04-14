@@ -5,7 +5,8 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from .ai import analyze_note
 from .auth import require_relay_token
@@ -295,8 +296,15 @@ async def delete_note_permanently(note_id: str):
         _asyncio.create_task(_del())
 
 
+class ClientContext(BaseModel):
+    """客户端携带的时间上下文，用于 AI 解析相对时间（如"明天上午 9 点"）"""
+    current_time_epoch_ms: int | None = None
+    current_timezone: str | None = None
+    current_time_text: str | None = None
+
+
 @router.post("/{note_id}/ai-analyze", response_model=AiSuggestionResponse)
-async def trigger_ai_analysis(note_id: str):
+async def trigger_ai_analysis(note_id: str, ctx: ClientContext | None = Body(default=None)):
     db = await get_db()
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     if not rows:
@@ -314,6 +322,8 @@ async def trigger_ai_analysis(note_id: str):
     await db.commit()
 
     try:
+        # 优先用客户端传来的时间上下文，兜底用服务器时间（在 _resolve_time_context）
+        c = ctx or ClientContext()
         request = AiAnalyzeRequest(
             noteId=note_id,
             title=note["title"],
@@ -324,6 +334,9 @@ async def trigger_ai_analysis(note_id: str):
             transcript=note["transcript"],
             trigger="MANUAL",
             model="",
+            currentTimeText=c.current_time_text,
+            currentTimezone=c.current_timezone,
+            currentTimeEpochMs=c.current_time_epoch_ms,
         )
         result = analyze_note(request)
 
