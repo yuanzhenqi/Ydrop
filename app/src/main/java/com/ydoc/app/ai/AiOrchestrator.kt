@@ -74,6 +74,18 @@ class AiOrchestrator(
         )
         aiSuggestionRepository.upsert(running)
 
+        // 聚合用户已有标签（用于 AI 复用而非生造）
+        val allNotes = noteRepository.observeNotes().first()
+        val existingTags = allNotes
+            .flatMap { it.tags }
+            .filter { it.isNotBlank() }
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .take(30)
+            .map { it.key }
+
         val request = AiAnalyzeRequest(
             noteId = note.id,
             title = note.title,
@@ -88,6 +100,8 @@ class AiOrchestrator(
             currentTimezone = TimeZone.getDefault().id,
             currentTimeEpochMs = now,
             prompt = settings.promptSupplement,
+            existingTags = existingTags,
+            currentTags = note.tags,
         )
 
         val analysisResult = runCatching { analyzeWithRetry(request, settings) }
@@ -104,6 +118,12 @@ class AiOrchestrator(
                     suggestedPriority = response.suggestedPriority
                         ?.takeIf { it.isNotBlank() }
                         ?.let { runCatching { com.ydoc.app.model.NotePriority.valueOf(it.uppercase()) }.getOrNull() },
+                    suggestedTags = response.suggestedTags
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() && it.length in 1..24 }
+                        .filter { it !in note.tags }  // 过滤已有标签，避免重复
+                        .distinct()
+                        .take(4),
                     todoItems = response.todoItems,
                     extractedEntities = response.extractedEntities,
                     reminderCandidates = response.reminderCandidates,

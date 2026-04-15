@@ -12,6 +12,7 @@ data class AiSuggestionEntity(
     val suggestedTitle: String?,
     val suggestedCategory: String?,
     val suggestedPriority: String?,
+    val suggestedTagsJson: String = "[]",
     val todoItemsJson: String,
     val extractedEntitiesJson: String,
     val reminderCandidatesJson: String,

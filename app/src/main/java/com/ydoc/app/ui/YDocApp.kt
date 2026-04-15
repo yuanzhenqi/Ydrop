@@ -58,8 +58,12 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -238,6 +242,10 @@ fun YDocApp(
         onRestoreNote = viewModel::restoreNote,
         onDeletePermanently = viewModel::permanentlyDeleteNote,
         onEmptyTrash = viewModel::emptyTrash,
+        onOpenBatchOrganize = viewModel::openBatchOrganize,
+        onCloseBatchOrganize = viewModel::closeBatchOrganize,
+        onAnalyzeBatch = viewModel::analyzeBatch,
+        onApplyCluster = viewModel::applyCluster,
         onRetrySync = viewModel::retrySync,
         onRunAi = viewModel::runAiForNote,
         onApplyAi = viewModel::applyAiSuggestion,
@@ -318,6 +326,10 @@ private fun YDocScreen(
     onRestoreNote: (String) -> Unit,
     onDeletePermanently: (String) -> Unit,
     onEmptyTrash: () -> Unit,
+    onOpenBatchOrganize: () -> Unit,
+    onCloseBatchOrganize: () -> Unit,
+    onAnalyzeBatch: () -> Unit,
+    onApplyCluster: (com.ydoc.app.model.ClusterSuggestion) -> Unit,
     onRetrySync: (String) -> Unit,
     onRunAi: (String) -> Unit,
     onApplyAi: (String) -> Unit,
@@ -368,6 +380,25 @@ private fun YDocScreen(
         .sortedBy { it.scheduledAt }
     var searchMode by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val swipeScope = rememberCoroutineScope()
+
+    // Helper：滑动动作 + undo snackbar（5 秒内可撤销可逆动作）
+    fun performSwipeAction(action: () -> Unit, label: String, undo: (() -> Unit)?) {
+        action()
+        if (undo != null) {
+            swipeScope.launch {
+                val result = snackbarHostState.showSnackbar(
+                    message = label,
+                    actionLabel = "撤销",
+                    duration = SnackbarDuration.Short,
+                    withDismissAction = true,
+                )
+                if (result == SnackbarResult.ActionPerformed) {
+                    undo()
+                }
+            }
+        }
+    }
     LaunchedEffect(state.editingNote?.noteId) {
         if (state.editingNote != null) {
             listState.animateScrollToItem(1)
@@ -482,6 +513,7 @@ private fun YDocScreen(
                         state = state,
                         onShowSection = onShowSection,
                         onEmptyTrash = onEmptyTrash,
+                        onOpenBatchOrganize = onOpenBatchOrganize,
                     )
                 }
                 // Tag filter bar
@@ -519,16 +551,36 @@ private fun YDocScreen(
                             section = state.currentSection,
                             onSwipeRight = {
                                 when (state.currentSection) {
-                                    NoteListSection.INBOX -> onArchiveNote(note.id)
-                                    NoteListSection.ARCHIVE -> onUnarchiveNote(note.id)
-                                    NoteListSection.TRASH -> onRestoreNote(note.id)
+                                    NoteListSection.INBOX -> performSwipeAction(
+                                        action = { onArchiveNote(note.id) },
+                                        label = "已归档",
+                                        undo = { onUnarchiveNote(note.id) },
+                                    )
+                                    NoteListSection.ARCHIVE -> performSwipeAction(
+                                        action = { onUnarchiveNote(note.id) },
+                                        label = "已取消归档",
+                                        undo = { onArchiveNote(note.id) },
+                                    )
+                                    NoteListSection.TRASH -> performSwipeAction(
+                                        action = { onRestoreNote(note.id) },
+                                        label = "已恢复",
+                                        undo = { onDeleteNote(note.id) },
+                                    )
                                     else -> {}
                                 }
                             },
                             onSwipeLeft = {
                                 when (state.currentSection) {
-                                    NoteListSection.TRASH -> onDeletePermanently(note.id)
-                                    else -> onDeleteNote(note.id)
+                                    NoteListSection.TRASH -> performSwipeAction(
+                                        action = { onDeletePermanently(note.id) },
+                                        label = "已彻底删除",
+                                        undo = null,  // 不可撤销
+                                    )
+                                    else -> performSwipeAction(
+                                        action = { onDeleteNote(note.id) },
+                                        label = "已移入回收站",
+                                        undo = { onRestoreNote(note.id) },
+                                    )
                                 }
                             },
                         ) {
@@ -585,6 +637,16 @@ private fun YDocScreen(
                 )
             }
         }
+    }
+
+    // 批量整理 ModalBottomSheet
+    if (state.batchOrganize.visible) {
+        BatchOrganizeSheet(
+            uiState = state.batchOrganize,
+            onDismiss = onCloseBatchOrganize,
+            onReanalyze = onAnalyzeBatch,
+            onApplyCluster = onApplyCluster,
+        )
     }
 }
 
@@ -1338,6 +1400,7 @@ private fun NotesSectionRowV2(
     state: AppUiState,
     onShowSection: (NoteListSection) -> Unit,
     onEmptyTrash: () -> Unit,
+    onOpenBatchOrganize: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1368,11 +1431,17 @@ private fun NotesSectionRowV2(
             label = { Text("回收站 ${state.trashedNotes.size}", style = MaterialTheme.typography.labelSmall) },
             modifier = Modifier.height(30.dp),
         )
+        Spacer(Modifier.weight(1f))
         if (state.currentSection == NoteListSection.TRASH && state.trashedNotes.isNotEmpty()) {
-            Spacer(Modifier.weight(1f))
             AssistChip(
                 onClick = onEmptyTrash,
                 label = { Text("清空", style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier.height(30.dp),
+            )
+        } else if (state.currentSection == NoteListSection.INBOX && state.notes.size >= 2) {
+            AssistChip(
+                onClick = onOpenBatchOrganize,
+                label = { Text("批量整理", style = MaterialTheme.typography.labelSmall) },
                 modifier = Modifier.height(30.dp),
             )
         }
@@ -2044,6 +2113,7 @@ private fun SwipeableNoteCard(
     onSwipeLeft: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    // 阈值 45%：需要明确的横向滑动意图才触发，避免垂直滚动误触
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             when (value) {
@@ -2052,20 +2122,21 @@ private fun SwipeableNoteCard(
                 SwipeToDismissBoxValue.Settled -> false
             }
         },
-        positionalThreshold = { it * 0.25f },
+        positionalThreshold = { it * 0.45f },
     )
     SwipeToDismissBox(
         state = dismissState,
         backgroundContent = {
             val direction = dismissState.dismissDirection
-            val color by animateColorAsState(
-                when (direction) {
-                    SwipeToDismissBoxValue.StartToEnd -> Color(0xFF2E7D61)
-                    SwipeToDismissBoxValue.EndToStart -> Color(0xFFC44545)
-                    else -> Color.Transparent
-                },
-                label = "swipeBg",
-            )
+            // 进度渐变：前 15% 几乎不可见，避免轻触即闪色；45% 达到完全显色
+            val progress = dismissState.progress
+            val alpha = ((progress - 0.15f) / 0.30f).coerceIn(0f, 1f)
+            val baseColor = when (direction) {
+                SwipeToDismissBoxValue.StartToEnd -> Color(0xFF2E7D61)
+                SwipeToDismissBoxValue.EndToStart -> Color(0xFFC44545)
+                else -> Color.Transparent
+            }
+            val color = baseColor.copy(alpha = alpha)
             val label = when {
                 direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.INBOX -> "归档"
                 direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.ARCHIVE -> "取消归档"
@@ -2082,8 +2153,8 @@ private fun SwipeableNoteCard(
                     .padding(horizontal = 24.dp),
                 contentAlignment = alignment,
             ) {
-                if (label.isNotEmpty()) {
-                    Text(label, color = Color.White, fontWeight = FontWeight.SemiBold)
+                if (label.isNotEmpty() && alpha > 0.3f) {
+                    Text(label, color = Color.White.copy(alpha = alpha), fontWeight = FontWeight.SemiBold)
                 }
             }
         },
@@ -2445,6 +2516,14 @@ private fun AiSuggestionPanel(
                         }
                         suggestion.suggestedPriority?.let {
                             StatusPill(label = "优先级：${it.toChinese()}", color = MaterialTheme.colorScheme.tertiaryContainer)
+                        }
+                    }
+                    suggestion.suggestedTags.takeIf { it.isNotEmpty() }?.let { tags ->
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("建议标签：", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            tags.forEach { tag ->
+                                StatusPill(label = "#$tag", color = MaterialTheme.colorScheme.surfaceVariant)
+                            }
                         }
                     }
                     suggestion.todoItems.takeIf { it.isNotEmpty() }?.let { todos ->

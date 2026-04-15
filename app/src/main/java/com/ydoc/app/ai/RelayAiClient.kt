@@ -52,6 +52,34 @@ class RelayAiClient(
         }
     }
 
+    override suspend fun batchOrganize(
+        request: com.ydoc.app.model.BatchOrganizeRequest,
+        config: AiConfig,
+    ): com.ydoc.app.model.BatchOrganizeResponse {
+        require(config.baseUrl.isNotBlank()) { "AI Base URL 未配置" }
+        // 批量整理仅通过 relay_service 的 /api/ai/batch-organize 端点
+        val endpoint = config.baseUrl.trimEnd('/') + "/api/ai/batch-organize"
+        val httpRequest = Request.Builder()
+            .url(endpoint)
+            .post(json.encodeToString(com.ydoc.app.model.BatchOrganizeRequest.serializer(), request).toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("Content-Type", "application/json")
+            .apply {
+                if (config.token.isNotBlank()) {
+                    addHeader("Authorization", "Bearer ${config.token}")
+                }
+            }
+            .build()
+
+        return httpClient.newCall(httpRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("批量整理请求失败: HTTP ${response.code}")
+            }
+            val payload = response.body?.string().orEmpty()
+            ensureNotHtml(payload, response.header("Content-Type"))
+            json.decodeFromString(com.ydoc.app.model.BatchOrganizeResponse.serializer(), payload)
+        }
+    }
+
     private fun resolveMode(config: AiConfig): AiEndpointMode {
         if (config.endpointMode != AiEndpointMode.AUTO) return config.endpointMode
         detectProviderMode(config)?.let { return it }
@@ -520,16 +548,17 @@ class RelayAiClient(
             Do not use markdown fences.
             Do not add explanations, headings, notes, comments, or trailing text.
             Always provide a non-empty summary, even if there are no todo items or reminder candidates.
-            The JSON object may only contain these keys: summary, suggestedTitle, suggestedCategory, suggestedPriority, todoItems, extractedEntities, reminderCandidates.
+            The JSON object may only contain these keys: summary, suggestedTitle, suggestedCategory, suggestedPriority, suggestedTags, todoItems, extractedEntities, reminderCandidates.
             Use null for missing suggestedTitle, suggestedCategory, and suggestedPriority.
-            Use [] for empty todoItems, extractedEntities, and reminderCandidates.
+            Use [] for empty suggestedTags, todoItems, extractedEntities, and reminderCandidates.
             suggestedCategory must be NOTE, TODO, TASK, or REMINDER.
             suggestedPriority must be LOW, MEDIUM, HIGH, or URGENT.
+            suggestedTags must be an array of strings (0-4 items).
             extractedEntities items must be objects with keys label and value.
             reminderCandidates items must be objects with keys title, scheduledAt, reason, and scheduledAtIso.
             reminderCandidates[].scheduledAt must be unix milliseconds (best effort).
             reminderCandidates[].scheduledAtIso must be an ISO 8601 datetime string in the user's timezone: "YYYY-MM-DDTHH:mm".
-            Valid example JSON object: {"summary":"The user wants a reminder for tomorrow at 9 AM to submit the weekly report.","suggestedTitle":"Submit weekly report","suggestedCategory":"REMINDER","suggestedPriority":"HIGH","todoItems":["Submit weekly report"],"extractedEntities":[{"label":"time","value":"tomorrow 9 AM"},{"label":"task","value":"weekly report"}],"reminderCandidates":[{"title":"Submit weekly report","scheduledAt":1736384400000,"scheduledAtIso":"2024-09-09T09:00","reason":"The user explicitly asked to be reminded tomorrow at 9 AM."}]}
+            Valid example JSON object: {"summary":"The user wants a reminder for tomorrow at 9 AM to submit the weekly report.","suggestedTitle":"Submit weekly report","suggestedCategory":"REMINDER","suggestedPriority":"HIGH","suggestedTags":["工作","周报"],"todoItems":["Submit weekly report"],"extractedEntities":[{"label":"time","value":"tomorrow 9 AM"},{"label":"task","value":"weekly report"}],"reminderCandidates":[{"title":"Submit weekly report","scheduledAt":1736384400000,"scheduledAtIso":"2024-09-09T09:00","reason":"The user explicitly asked to be reminded tomorrow at 9 AM."}]}
             """
                 .trimIndent()
                 .replace('\n', ' ')

@@ -59,6 +59,7 @@ data class AiSuggestion(
     val suggestedTitle: String?,
     val suggestedCategory: NoteCategory?,
     val suggestedPriority: NotePriority?,
+    val suggestedTags: List<String> = emptyList(),
     val todoItems: List<String>,
     val extractedEntities: List<ExtractedEntity>,
     val reminderCandidates: List<ReminderCandidate>,
@@ -82,6 +83,8 @@ data class AiAnalyzeRequest(
     val currentTimezone: String,
     val currentTimeEpochMs: Long,
     val prompt: String? = null,
+    val existingTags: List<String> = emptyList(),
+    val currentTags: List<String> = emptyList(),
 )
 
 @Serializable
@@ -90,9 +93,34 @@ data class AiAnalyzeResponse(
     val suggestedTitle: String? = null,
     val suggestedCategory: String? = null,
     val suggestedPriority: String? = null,
+    val suggestedTags: List<String> = emptyList(),
     val todoItems: List<String> = emptyList(),
     val extractedEntities: List<ExtractedEntity> = emptyList(),
     val reminderCandidates: List<ReminderCandidate> = emptyList(),
+)
+
+// ─── 批量整理 ───
+
+@Serializable
+data class ClusterSuggestion(
+    val cluster_id: String,
+    val theme: String,
+    val note_ids: List<String>,
+    val suggested_action: String,  // "merge" / "convert_to_task" / "keep"
+    val suggested_title: String? = null,
+    val reason: String = "",
+)
+
+@Serializable
+data class BatchOrganizeResponse(
+    val total_analyzed: Int,
+    val clusters: List<ClusterSuggestion>,
+)
+
+@Serializable
+data class BatchOrganizeRequest(
+    val note_ids: List<String>? = null,
+    val max_notes: Int = 50,
 )
 
 fun AiAnalyzeResponse.isEffectivelyEmpty(): Boolean =
@@ -100,6 +128,7 @@ fun AiAnalyzeResponse.isEffectivelyEmpty(): Boolean =
         suggestedTitle.isNullOrBlank() &&
         suggestedCategory.isNullOrBlank() &&
         suggestedPriority.isNullOrBlank() &&
+        suggestedTags.isEmpty() &&
         todoItems.isEmpty() &&
         extractedEntities.isEmpty() &&
         reminderCandidates.isEmpty()
@@ -120,6 +149,7 @@ fun AiSuggestion.hasVisibleContent(): Boolean =
         !suggestedTitle.isNullOrBlank() ||
         suggestedCategory != null ||
         suggestedPriority != null ||
+        suggestedTags.isNotEmpty() ||
         todoItems.isNotEmpty() ||
         extractedEntities.isNotEmpty() ||
         reminderCandidates.isNotEmpty()
@@ -154,6 +184,23 @@ fun defaultAiPromptTemplate(): String =
     Extract concrete todo items from explicit or strongly implied actions.
     Extract useful entities such as intent, people, dates, times, places, organizations, projects, and reference values when relevant.
     Do not guess reminder times when the time expression is too ambiguous to resolve with confidence.
+
+    TAG EXTRACTION RULES:
+    - Extract user-mentioned tags when they explicitly say "标签"/"tag" or use hashtag form (#xxx).
+    - Also extract semantically meaningful tags when the note's topic is clear (project name, domain, context, person).
+    - Prefer tags the user has used before (provided via existingTags/EXISTING_TAGS) — use them verbatim if applicable.
+    - If the note's currentTags already contains suitable tags, DO NOT re-suggest them.
+    - Output 0-4 tags max in suggestedTags field. Each tag: 2-8 Chinese chars or 1-20 English chars.
+    - If no relevant tags, return [].
+
+    CATEGORY / PRIORITY SIGNAL WORDS:
+    - Urgency → suggestedPriority=URGENT: 紧急, 立即, 马上, 尽快, ASAP, 火烧眉毛, 今天必须, 今晚必须.
+    - High priority → suggestedPriority=HIGH: 今天, 今晚, 本周必做, 重要, 截止, deadline, 关键.
+    - Low priority → suggestedPriority=LOW: 有空再做, 不急, 随便记下, 备忘, 参考.
+    - Action signal → suggestedCategory=TODO: 去做, 买, 发送, 提交, 打电话, 联系, 完成.
+    - Time-bound signal → suggestedCategory=REMINDER + create reminderCandidates.
+    - Project/multi-step signal → suggestedCategory=TASK: 项目, 方案, 规划, 设计, 推进.
+    - Pure record/no action → suggestedCategory=NOTE.
     """.trimIndent()
 
 fun legacyAiPromptTemplate(): String =

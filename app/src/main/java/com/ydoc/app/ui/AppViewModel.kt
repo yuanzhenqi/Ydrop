@@ -93,6 +93,17 @@ data class AppUiState(
     val tagFilter: Set<String> = emptySet(),
     val searchQuery: String = "",
     val suggestedTags: List<String> = emptyList(),
+    val batchOrganize: BatchOrganizeUiState = BatchOrganizeUiState(),
+)
+
+data class BatchOrganizeUiState(
+    val visible: Boolean = false,
+    val loading: Boolean = false,
+    val totalAnalyzed: Int = 0,
+    val clusters: List<com.ydoc.app.model.ClusterSuggestion> = emptyList(),
+    val appliedClusterIds: Set<String> = emptySet(),
+    val applyingClusterIds: Set<String> = emptySet(),
+    val error: String? = null,
 )
 
 class AppViewModel(
@@ -311,6 +322,12 @@ class AppViewModel(
                         ?: error("找不到对应便签。")
                     val aiContent = buildAppliedAiContent(note.content, suggestion)
                     val shouldReplaceContent = aiContent.isNotBlank() && aiContent != note.content.trim()
+                    // 合并 AI 建议的标签（不覆盖已有，只追加）
+                    val mergedTags = if (suggestion.suggestedTags.isNotEmpty()) {
+                        (note.tags + suggestion.suggestedTags).distinct()
+                    } else {
+                        note.tags
+                    }
                     val updated = note.copy(
                         title = suggestion.suggestedTitle?.takeIf { it.isNotBlank() } ?: note.title,
                         category = suggestion.suggestedCategory ?: note.category,
@@ -325,6 +342,7 @@ class AppViewModel(
                         } else {
                             note.originalContent
                         },
+                        tags = mergedTags,
                     )
                     val saved = container.noteRepository.saveNote(updated)
                     container.aiSuggestionRepository.markStatus(noteId, com.ydoc.app.model.AiSuggestionStatus.APPLIED)
@@ -334,6 +352,126 @@ class AppViewModel(
                 _uiState.value = _uiState.value.copy(message = "AI 建议已应用。")
             }.onFailure {
                 _uiState.value = _uiState.value.copy(message = it.message ?: "应用 AI 建议失败。")
+            }
+        }
+    }
+
+    fun openBatchOrganize() {
+        _uiState.value = _uiState.value.copy(
+            batchOrganize = _uiState.value.batchOrganize.copy(visible = true, error = null),
+        )
+        analyzeBatch()
+    }
+
+    fun closeBatchOrganize() {
+        _uiState.value = _uiState.value.copy(
+            batchOrganize = BatchOrganizeUiState(),  // 关闭后完全重置
+        )
+    }
+
+    fun analyzeBatch() {
+        val cfg = _uiState.value.settings.ai
+        if (!cfg.enabled || cfg.baseUrl.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                batchOrganize = _uiState.value.batchOrganize.copy(
+                    error = "请先在设置中启用并配置 AI",
+                    loading = false,
+                ),
+            )
+            return
+        }
+        _uiState.value = _uiState.value.copy(
+            batchOrganize = _uiState.value.batchOrganize.copy(loading = true, error = null),
+        )
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    container.aiClient.batchOrganize(
+                        com.ydoc.app.model.BatchOrganizeRequest(note_ids = null, max_notes = 50),
+                        cfg,
+                    )
+                }
+            }.onSuccess { result ->
+                _uiState.value = _uiState.value.copy(
+                    batchOrganize = _uiState.value.batchOrganize.copy(
+                        loading = false,
+                        totalAnalyzed = result.total_analyzed,
+                        clusters = result.clusters,
+                        appliedClusterIds = emptySet(),
+                        error = null,
+                    ),
+                )
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(
+                    batchOrganize = _uiState.value.batchOrganize.copy(
+                        loading = false,
+                        error = e.message ?: "批量整理失败",
+                    ),
+                )
+            }
+        }
+    }
+
+    fun applyCluster(cluster: com.ydoc.app.model.ClusterSuggestion) {
+        val current = _uiState.value.batchOrganize
+        if (cluster.cluster_id in current.appliedClusterIds) return
+        _uiState.value = _uiState.value.copy(
+            batchOrganize = current.copy(
+                applyingClusterIds = current.applyingClusterIds + cluster.cluster_id,
+            ),
+        )
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    when (cluster.suggested_action) {
+                        "convert_to_task" -> {
+                            cluster.note_ids.forEach { nid ->
+                                val note = container.noteRepository.getNote(nid) ?: return@forEach
+                                container.noteRepository.saveNote(
+                                    note.copy(
+                                        category = com.ydoc.app.model.NoteCategory.TASK,
+                                        colorToken = defaultColorFor(com.ydoc.app.model.NoteCategory.TASK, note.priority),
+                                    ),
+                                )
+                            }
+                            "${cluster.note_ids.size} 条已转为任务"
+                        }
+                        "merge" -> {
+                            if (cluster.note_ids.isEmpty()) return@withContext "无"
+                            val notes = cluster.note_ids.mapNotNull { container.noteRepository.getNote(it) }
+                            if (notes.size < 2) return@withContext "无需合并"
+                            val first = notes.first()
+                            val merged = notes.joinToString("\n\n---\n\n") { "## ${it.title}\n${it.content}" }
+                            container.noteRepository.saveNote(
+                                first.copy(
+                                    title = cluster.suggested_title ?: first.title,
+                                    content = merged,
+                                ),
+                            )
+                            // 其他笔记进入回收站
+                            notes.drop(1).forEach { container.noteRepository.trashNote(it.id) }
+                            "已合并 ${notes.size} 条笔记"
+                        }
+                        else -> "建议为保持独立，无需应用"
+                    }
+                }
+            }.onSuccess { msg ->
+                val nowState = _uiState.value.batchOrganize
+                _uiState.value = _uiState.value.copy(
+                    message = msg,
+                    batchOrganize = nowState.copy(
+                        appliedClusterIds = nowState.appliedClusterIds + cluster.cluster_id,
+                        applyingClusterIds = nowState.applyingClusterIds - cluster.cluster_id,
+                    ),
+                )
+            }.onFailure { e ->
+                val nowState = _uiState.value.batchOrganize
+                _uiState.value = _uiState.value.copy(
+                    message = "应用失败：${e.message}",
+                    batchOrganize = nowState.copy(
+                        applyingClusterIds = nowState.applyingClusterIds - cluster.cluster_id,
+                    ),
+                )
             }
         }
     }
