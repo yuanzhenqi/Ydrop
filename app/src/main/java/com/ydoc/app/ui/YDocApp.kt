@@ -14,6 +14,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
@@ -97,8 +98,6 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Merge
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
@@ -601,23 +600,15 @@ private fun YDocScreen(
                                     .fillMaxWidth()
                                     .then(
                                         if (state.selectionMode) {
-                                            Modifier.border(
-                                                width = if (isSelected) 2.dp else 1.dp,
-                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                                shape = RoundedCornerShape(18.dp),
-                                            )
+                                            Modifier
+                                                .border(
+                                                    width = if (isSelected) 2.dp else 1.dp,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                    shape = RoundedCornerShape(18.dp),
+                                                )
+                                                .clickable { onToggleSelection(note.id) }
                                         } else Modifier,
-                                    )
-                                    .pointerInput(note.id, state.selectionMode) {
-                                        detectTapGestures(
-                                            onLongPress = {
-                                                if (!state.selectionMode) onEnterSelectionMode(note.id)
-                                            },
-                                            onTap = {
-                                                if (state.selectionMode) onToggleSelection(note.id)
-                                            },
-                                        )
-                                    },
+                                    ),
                             ) {
                                 inner()
                                 if (state.selectionMode) {
@@ -655,6 +646,8 @@ private fun YDocScreen(
                                 onCreateReminderFromSuggestion = { candidate -> onCreateReminderFromSuggestion(note.id, candidate) },
                                 onAddQuickReminder = onAddQuickReminder,
                                 onCopy = { onCopyNote(note.id) },
+                                selectionMode = state.selectionMode,
+                                onLongClick = { onEnterSelectionMode(note.id) },
                             )
                         }
                         if (state.selectionMode) {
@@ -786,7 +779,11 @@ private fun HeroCaptureCard(
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
 ) {
-    val effectiveExpanded = captureExpanded || draft.content.isNotBlank() || recording.state != RecordingState.IDLE
+    // SAVING 不保持展开：用户按停止后立刻回 inbox，保存/转写/AI 整理全后台跑
+    val effectiveExpanded = captureExpanded ||
+        draft.content.isNotBlank() ||
+        recording.state == RecordingState.RECORDING ||
+        recording.state == RecordingState.STARTING
     val previewText = draft.content.ifBlank { "记点什么…" }
     Card(
         modifier = modifier,
@@ -2445,7 +2442,7 @@ private fun SwipeableNoteCard(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun NoteCardV2(
     note: Note,
@@ -2468,6 +2465,8 @@ private fun NoteCardV2(
     onCreateReminderFromSuggestion: (ReminderCandidate) -> Unit,
     onAddQuickReminder: (String, Long) -> Unit,
     onCopy: () -> Unit,
+    selectionMode: Boolean = false,
+    onLongClick: () -> Unit = {},
 ) {
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
@@ -2493,14 +2492,24 @@ private fun NoteCardV2(
         else -> null
     }
 
+    val interactionSource = remember { MutableInteractionSource() }
+    // 多选模式下禁用 Card 自身点击（tap 透到外层 wrapper 切换选中）；
+    // 非多选时用 combinedClickable 同时处理单击展开 + 长按进入多选。
+    val cardClickModifier = if (selectionMode) {
+        Modifier
+    } else {
+        Modifier.combinedClickable(
+            indication = null,
+            interactionSource = interactionSource,
+            onClick = { expanded = !expanded },
+            onLongClick = onLongClick,
+        )
+    }
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        modifier = Modifier.clickable(
-            indication = null,
-            interactionSource = remember { MutableInteractionSource() },
-        ) { expanded = !expanded },
+        modifier = cardClickModifier,
     ) {
         Column(
             modifier = Modifier
