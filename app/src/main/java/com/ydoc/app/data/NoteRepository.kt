@@ -292,6 +292,52 @@ class NoteRepository(
         return getNote(noteId) ?: error("Note not found")
     }
 
+    /**
+     * 把多条笔记合并为一条新的 TEXT note：
+     * - 按 createdAt 升序拼接 content（每段前加 "### 原标题" 作为分隔）
+     * - tags 取并集
+     * - category 取出现次数最多的；并列时取 ids 中第一条的 category
+     * - priority 取最高（URGENT > HIGH > MEDIUM > LOW）
+     * - 原 N 条全部移入回收站
+     * 返回新 note；若 ids 少于 2 条或查不到，抛错。
+     */
+    suspend fun mergeNotes(ids: List<String>, overrideTitle: String? = null): Note {
+        require(ids.size >= 2) { "至少选择 2 条笔记才能合并。" }
+        val sources = ids.mapNotNull { noteDao.getById(it)?.toModel() }
+            .sortedBy { it.createdAt }
+        require(sources.size >= 2) { "所选笔记不存在或已被删除。" }
+
+        val mergedContent = buildString {
+            if (!overrideTitle.isNullOrBlank()) {
+                appendLine("# ${overrideTitle.trim()}")
+                appendLine()
+            }
+            sources.forEachIndexed { index, note ->
+                val heading = note.title.trim().ifBlank { "片段 ${index + 1}" }
+                appendLine("### $heading")
+                appendLine(note.content.trim())
+                if (index != sources.lastIndex) {
+                    appendLine()
+                }
+            }
+        }.trimEnd()
+
+        val mergedTags = sources.flatMap { it.tags }.distinct()
+        val mergedCategory = sources.groupingBy { it.category }.eachCount()
+            .maxByOrNull { it.value }?.key ?: sources.first().category
+        val mergedPriority = sources.maxByOrNull { it.priority.ordinal }?.priority
+            ?: NotePriority.MEDIUM
+
+        val newNote = createTextNote(
+            content = mergedContent,
+            category = mergedCategory,
+            priority = mergedPriority,
+            tags = mergedTags,
+        )
+        sources.forEach { runCatching { trashNote(it.id) } }
+        return newNote
+    }
+
     suspend fun emptyTrash() {
         val trashed = noteDao.getTrashed()
         trashed.forEach { entity ->

@@ -28,4 +28,6 @@ data class ReminderEntry(
     val deliveryTargets: Set<ReminderDeliveryTarget>,
     val createdAt: Long,
     val updatedAt: Long,
+    /** 对应系统日历 Events._ID；未同步时为 null。 */
+    val systemEventId: Long? = null,
 )

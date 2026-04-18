@@ -15,6 +15,8 @@ import com.ydoc.app.sync.SyncOrchestrator
 import com.ydoc.app.sync.SyncScheduler
 import com.ydoc.app.sync.WebDavSyncClient
 import com.ydoc.app.reminder.ReminderScheduler
+import com.ydoc.app.reminder.SystemAlarmExporter
+import com.ydoc.app.reminder.SystemCalendarBridge
 import com.ydoc.app.transcription.TranscriptionOrchestrator
 import com.ydoc.app.transcription.TranscriptionScheduler
 import com.ydoc.app.transcription.VolcengineTranscriptionClient
@@ -57,7 +59,13 @@ class AppContainer(context: Context) {
 
     val noteRepository = NoteRepository(database.noteDao(), database.tombstoneDao())
     val aiSuggestionRepository = AiSuggestionRepository(database.aiSuggestionDao())
-    val reminderRepository = ReminderRepository(database.reminderEntryDao())
+    val systemCalendarBridge = SystemCalendarBridge(appContext)
+    val systemAlarmExporter = SystemAlarmExporter(appContext)
+    val reminderRepository = ReminderRepository(
+        database.reminderEntryDao(),
+        systemCalendarBridge,
+        systemAlarmExporter,
+    )
     val syncTargetRepository = SyncTargetRepository(database.syncTargetDao())
     val syncOrchestrator = SyncOrchestrator(
         noteRepository = noteRepository,

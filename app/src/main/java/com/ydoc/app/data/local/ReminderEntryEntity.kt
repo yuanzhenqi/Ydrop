@@ -14,4 +14,5 @@ data class ReminderEntryEntity(
     val deliveryTargetsJson: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val systemEventId: Long? = null,
 )
