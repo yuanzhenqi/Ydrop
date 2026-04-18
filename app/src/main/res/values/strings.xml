@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Ydrop</string>
+    <string name="quick_record_label">Ydrop 快速录音</string>
+    <string name="a11y_service_label">Ydrop 快速录音</string>
+    <string name="a11y_service_description">启用后，双击音量下键（包括锁屏）可立即启动 Ydrop 录音。仅读取按键事件，不访问屏幕内容。</string>
+    <string name="a11y_service_summary">双击音量下键快速启动录音</string>
 </resources>

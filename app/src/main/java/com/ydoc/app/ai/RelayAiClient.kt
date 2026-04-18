@@ -57,26 +57,206 @@ class RelayAiClient(
         config: AiConfig,
     ): com.ydoc.app.model.BatchOrganizeResponse {
         require(config.baseUrl.isNotBlank()) { "AI Base URL 未配置" }
-        // 批量整理仅通过 relay_service 的 /api/ai/batch-organize 端点
-        val endpoint = config.baseUrl.trimEnd('/') + "/api/ai/batch-organize"
-        val httpRequest = Request.Builder()
-            .url(endpoint)
-            .post(json.encodeToString(com.ydoc.app.model.BatchOrganizeRequest.serializer(), request).toRequestBody(JSON_MEDIA_TYPE))
-            .addHeader("Content-Type", "application/json")
-            .apply {
-                if (config.token.isNotBlank()) {
-                    addHeader("Authorization", "Bearer ${config.token}")
-                }
-            }
-            .build()
+        if (request.notes.isEmpty()) {
+            return com.ydoc.app.model.BatchOrganizeResponse(total_analyzed = 0, clusters = emptyList())
+        }
+        val mode = resolveMode(config)
+        val clusters = when (mode) {
+            AiEndpointMode.OPENAI -> batchViaOpenAi(request, config)
+            AiEndpointMode.ANTHROPIC -> batchViaAnthropic(request, config)
+            AiEndpointMode.RELAY -> batchViaRelay(request, config)
+            AiEndpointMode.AUTO -> error("AI 模式自动识别失败")
+        }
+        return com.ydoc.app.model.BatchOrganizeResponse(
+            total_analyzed = request.notes.size,
+            clusters = clusters,
+        )
+    }
 
+    private fun batchViaOpenAi(
+        request: com.ydoc.app.model.BatchOrganizeRequest,
+        config: AiConfig,
+    ): List<com.ydoc.app.model.ClusterSuggestion> {
+        require(config.token.isNotBlank()) { "AI Token 未配置" }
+        val body = buildJsonObject {
+            put("model", JsonPrimitive(config.model.ifBlank { "gpt-4o-mini" }))
+            put(
+                "messages",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("system"))
+                            put("content", JsonPrimitive(BATCH_ORGANIZE_SYSTEM_PROMPT))
+                        },
+                    )
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive(encodeBatchPrompt(request.notes)))
+                        },
+                    )
+                },
+            )
+            put(
+                "response_format",
+                buildJsonObject { put("type", JsonPrimitive("json_object")) },
+            )
+        }
+        val httpRequest = Request.Builder()
+            .url(buildProviderUrl(config.baseUrl, "chat/completions"))
+            .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("Authorization", "Bearer ${config.token}")
+            .addHeader("Content-Type", "application/json")
+            .build()
         return httpClient.newCall(httpRequest).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IOException("批量整理请求失败: HTTP ${response.code}")
             }
             val payload = response.body?.string().orEmpty()
             ensureNotHtml(payload, response.header("Content-Type"))
-            json.decodeFromString(com.ydoc.app.model.BatchOrganizeResponse.serializer(), payload)
+            val root = parseEnvelope(payload, AiEndpointMode.OPENAI)
+            val content = root["choices"]
+                ?.jsonArray
+                ?.firstOrNull()
+                ?.jsonObject
+                ?.get("message")
+                ?.jsonObject
+                ?.get("content")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                ?: throw buildStructuredOutputError(
+                    mode = AiEndpointMode.OPENAI,
+                    message = "批量整理返回缺少 choices.message.content",
+                    rawContent = payload,
+                )
+            decodeBatchClusters(content, AiEndpointMode.OPENAI)
+        }
+    }
+
+    private fun batchViaAnthropic(
+        request: com.ydoc.app.model.BatchOrganizeRequest,
+        config: AiConfig,
+    ): List<com.ydoc.app.model.ClusterSuggestion> {
+        require(config.token.isNotBlank()) { "AI Token 未配置" }
+        val body = buildJsonObject {
+            put("model", JsonPrimitive(config.model.ifBlank { "claude-3-5-sonnet-latest" }))
+            put("max_tokens", JsonPrimitive(1600))
+            put("system", JsonPrimitive(BATCH_ORGANIZE_SYSTEM_PROMPT))
+            put(
+                "messages",
+                buildJsonArray {
+                    add(
+                        buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive(encodeBatchPrompt(request.notes)))
+                        },
+                    )
+                },
+            )
+        }
+        val httpRequest = Request.Builder()
+            .url(buildProviderUrl(config.baseUrl, "messages"))
+            .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("x-api-key", config.token)
+            .addHeader("anthropic-version", "2023-06-01")
+            .addHeader("Content-Type", "application/json")
+            .build()
+        return httpClient.newCall(httpRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("批量整理请求失败: HTTP ${response.code}")
+            }
+            val payload = response.body?.string().orEmpty()
+            ensureNotHtml(payload, response.header("Content-Type"))
+            val root = parseEnvelope(payload, AiEndpointMode.ANTHROPIC)
+            val content = root["content"]
+                ?.jsonArray
+                ?.firstOrNull { block -> block.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "text" }
+                ?.jsonObject
+                ?.get("text")
+                ?.jsonPrimitive
+                ?.contentOrNull
+                ?: throw buildStructuredOutputError(
+                    mode = AiEndpointMode.ANTHROPIC,
+                    message = "批量整理返回缺少 content[].text",
+                    rawContent = payload,
+                )
+            decodeBatchClusters(content, AiEndpointMode.ANTHROPIC)
+        }
+    }
+
+    /** RELAY 模式：继续打 relay 的 `/api/ai/batch-organize`，用 relay 数据库里的笔记。 */
+    private fun batchViaRelay(
+        request: com.ydoc.app.model.BatchOrganizeRequest,
+        config: AiConfig,
+    ): List<com.ydoc.app.model.ClusterSuggestion> {
+        val endpoint = config.baseUrl.trimEnd('/') + "/api/ai/batch-organize"
+        val legacyBody = buildJsonObject {
+            put("note_ids", buildJsonArray { request.notes.forEach { add(JsonPrimitive(it.id)) } })
+            put("max_notes", JsonPrimitive(request.max_notes))
+        }
+        val httpRequest = Request.Builder()
+            .url(endpoint)
+            .post(json.encodeToString(JsonObject.serializer(), legacyBody).toRequestBody(JSON_MEDIA_TYPE))
+            .addHeader("Content-Type", "application/json")
+            .apply {
+                if (config.token.isNotBlank()) addHeader("Authorization", "Bearer ${config.token}")
+            }
+            .build()
+        return httpClient.newCall(httpRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                val preview = runCatching { response.body?.string().orEmpty().take(200) }.getOrDefault("")
+                throw IOException("批量整理请求失败: HTTP ${response.code}${if (preview.isNotBlank()) "，$preview" else ""}")
+            }
+            val payload = response.body?.string().orEmpty()
+            ensureNotHtml(payload, response.header("Content-Type"))
+            json.decodeFromString(
+                com.ydoc.app.model.BatchOrganizeResponse.serializer(),
+                payload,
+            ).clusters
+        }
+    }
+
+    private fun encodeBatchPrompt(notes: List<com.ydoc.app.model.BatchOrganizeNoteInput>): String {
+        val compact = notes.map { note ->
+            buildJsonObject {
+                put("id", JsonPrimitive(note.id))
+                put("title", JsonPrimitive(note.title))
+                put("content", JsonPrimitive(note.content.take(300)))
+                put("category", JsonPrimitive(note.category))
+                put(
+                    "tags",
+                    buildJsonArray { note.tags.forEach { add(JsonPrimitive(it)) } },
+                )
+                put("created_at", JsonPrimitive(note.created_at))
+            }
+        }
+        val arr = buildJsonArray { compact.forEach { add(it) } }
+        return "用户笔记（JSON 数组）：\n" + json.encodeToString(JsonArray.serializer(), arr)
+    }
+
+    private fun decodeBatchClusters(
+        content: String,
+        mode: AiEndpointMode,
+    ): List<com.ydoc.app.model.ClusterSuggestion> {
+        val normalized = normalizeStructuredResponse(content, mode)
+        val root = try {
+            json.parseToJsonElement(normalized).jsonObject
+        } catch (error: Exception) {
+            throw buildStructuredOutputError(
+                mode = mode,
+                message = "批量整理返回不是合法 JSON",
+                rawContent = normalized,
+                cause = error,
+            )
+        }
+        val clustersArr = root["clusters"]?.jsonArray ?: return emptyList()
+        return clustersArr.mapNotNull { element ->
+            runCatching {
+                json.decodeFromString(
+                    com.ydoc.app.model.ClusterSuggestion.serializer(),
+                    json.encodeToString(JsonObject.serializer(), element.jsonObject),
+                )
+            }.getOrNull()
         }
     }
 
@@ -481,6 +661,18 @@ class RelayAiClient(
                 put("currentTimeText", JsonPrimitive(request.currentTimeText))
                 put("currentTimezone", JsonPrimitive(request.currentTimezone))
                 put("currentTimeEpochMs", JsonPrimitive(request.currentTimeEpochMs))
+                if (request.existingTags.isNotEmpty()) {
+                    put(
+                        "existingTags",
+                        buildJsonArray { request.existingTags.forEach { add(JsonPrimitive(it)) } },
+                    )
+                }
+                if (request.currentTags.isNotEmpty()) {
+                    put(
+                        "currentTags",
+                        buildJsonArray { request.currentTags.forEach { add(JsonPrimitive(it)) } },
+                    )
+                }
             },
         )
 
@@ -504,6 +696,19 @@ class RelayAiClient(
             appendLine("- Also provide scheduledAt as epoch milliseconds (best effort); the app will prefer scheduledAtIso if present.")
             appendLine("Resolve all relative dates and times against this context.")
             appendLine()
+            if (request.existingTags.isNotEmpty()) {
+                appendLine("EXISTING_TAGS (the user's current tag pool, preserve casing and language exactly):")
+                appendLine(request.existingTags.joinToString(", "))
+                appendLine("TAG REUSE RULE: when suggesting tags, you MUST first try to pick from EXISTING_TAGS verbatim.")
+                appendLine("Only invent a new tag when NONE of the existing tags matches the note's theme semantically.")
+                appendLine("New tags allowed: at most 1-2 per note; each new tag should be short (2-8 Chinese chars or 1-20 English chars), general, and reusable across future notes.")
+                appendLine()
+            }
+            if (request.currentTags.isNotEmpty()) {
+                appendLine("CURRENT_TAGS (tags already on this note — do NOT re-suggest these):")
+                appendLine(request.currentTags.joinToString(", "))
+                appendLine()
+            }
             append(basePrompt)
             append("\n\n")
             append(STRUCTURED_OUTPUT_REQUIREMENTS)
@@ -541,6 +746,23 @@ class RelayAiClient(
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        private val BATCH_ORGANIZE_SYSTEM_PROMPT =
+            """
+            你是用户笔记整理助手。用户会给你一批 inbox 笔记的 JSON 数组。
+            请分析它们的主题、标签、分类，识别出以下三类聚类：
+            - merge：内容高度相似或互补、可以合并为一条
+            - convert_to_task：多条零散笔记可以汇总成一个可执行任务
+            - keep：保持独立不动（一般不必返回这类，除非解释某主题为什么不合并）
+            只返回一个 raw JSON 对象，不要 Markdown、不要解释性文字，schema 如下：
+            {"clusters":[{"cluster_id":"c1","theme":"短主题","note_ids":["id1","id2"],"suggested_action":"merge","suggested_title":"建议标题","reason":"中文理由"}]}
+            要求：
+            - cluster_id 自取短字符串，唯一即可
+            - note_ids 中每个元素必须是输入笔记的 id，不要编造
+            - suggested_action 取值：merge / convert_to_task / keep
+            - theme、reason、suggested_title 全部用中文
+            - 如果没有可聚类的，返回 {"clusters":[]}
+            """.trimIndent()
 
         private val STRUCTURED_OUTPUT_REQUIREMENTS =
             """

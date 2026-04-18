@@ -167,6 +167,7 @@ fun ReminderEntryEntity.toModel(): ReminderEntry =
             .toSet(),
         createdAt = createdAt,
         updatedAt = updatedAt,
+        systemEventId = systemEventId,
     )
 
 fun ReminderEntry.toEntity(): ReminderEntryEntity =
@@ -180,4 +181,5 @@ fun ReminderEntry.toEntity(): ReminderEntryEntity =
         deliveryTargetsJson = json.encodeToString(ListSerializer(String.serializer()), deliveryTargets.map { it.name }),
         createdAt = createdAt,
         updatedAt = updatedAt,
+        systemEventId = systemEventId,
     )

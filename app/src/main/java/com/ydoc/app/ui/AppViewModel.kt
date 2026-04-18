@@ -94,6 +94,8 @@ data class AppUiState(
     val searchQuery: String = "",
     val suggestedTags: List<String> = emptyList(),
     val batchOrganize: BatchOrganizeUiState = BatchOrganizeUiState(),
+    val selectionMode: Boolean = false,
+    val selectedNoteIds: Set<String> = emptySet(),
 )
 
 data class BatchOrganizeUiState(
@@ -380,6 +382,27 @@ class AppViewModel(
             )
             return
         }
+        val localNotes = _uiState.value.notes
+            .take(50)
+            .map { note ->
+                com.ydoc.app.model.BatchOrganizeNoteInput(
+                    id = note.id,
+                    title = note.title.orEmpty(),
+                    content = note.content.orEmpty(),
+                    category = note.category.name,
+                    tags = note.tags,
+                    created_at = note.createdAt,
+                )
+            }
+        if (localNotes.size < 2) {
+            _uiState.value = _uiState.value.copy(
+                batchOrganize = _uiState.value.batchOrganize.copy(
+                    error = "收件箱至少需要 2 条笔记才能做批量整理",
+                    loading = false,
+                ),
+            )
+            return
+        }
         _uiState.value = _uiState.value.copy(
             batchOrganize = _uiState.value.batchOrganize.copy(loading = true, error = null),
         )
@@ -387,7 +410,7 @@ class AppViewModel(
             runCatching {
                 withContext(Dispatchers.IO) {
                     container.aiClient.batchOrganize(
-                        com.ydoc.app.model.BatchOrganizeRequest(note_ids = null, max_notes = 50),
+                        com.ydoc.app.model.BatchOrganizeRequest(notes = localNotes, max_notes = 50),
                         cfg,
                     )
                 }
@@ -406,6 +429,147 @@ class AppViewModel(
                     batchOrganize = _uiState.value.batchOrganize.copy(
                         loading = false,
                         error = e.message ?: "批量整理失败",
+                    ),
+                )
+            }
+        }
+    }
+
+    // ─── 多选模式 ───
+
+    fun enterSelectionMode(firstNoteId: String) {
+        _uiState.value = _uiState.value.copy(
+            selectionMode = true,
+            selectedNoteIds = setOf(firstNoteId),
+        )
+    }
+
+    fun toggleSelection(noteId: String) {
+        val current = _uiState.value.selectedNoteIds
+        val next = if (noteId in current) current - noteId else current + noteId
+        _uiState.value = _uiState.value.copy(
+            selectedNoteIds = next,
+            // 全取消也保持多选模式；显式退出由 exitSelectionMode 控制
+        )
+    }
+
+    fun selectAllVisible() {
+        val notes = when (_uiState.value.currentSection) {
+            NoteListSection.INBOX -> _uiState.value.notes
+            NoteListSection.ARCHIVE -> _uiState.value.archivedNotes
+            NoteListSection.TRASH -> _uiState.value.trashedNotes
+            else -> emptyList()
+        }
+        _uiState.value = _uiState.value.copy(
+            selectedNoteIds = notes.map { it.id }.toSet(),
+        )
+    }
+
+    fun exitSelectionMode() {
+        _uiState.value = _uiState.value.copy(
+            selectionMode = false,
+            selectedNoteIds = emptySet(),
+        )
+    }
+
+    /** 合并选中的笔记为一条新 note，原笔记移入回收站。 */
+    fun mergeSelectedNotes() {
+        val ids = _uiState.value.selectedNoteIds.toList()
+        if (ids.size < 2) {
+            _uiState.value = _uiState.value.copy(message = "至少选择 2 条笔记才能合并。")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    container.noteRepository.mergeNotes(ids)
+                }
+            }.onSuccess { newNote ->
+                _uiState.value = _uiState.value.copy(
+                    selectionMode = false,
+                    selectedNoteIds = emptySet(),
+                    message = "已合并 ${ids.size} 条笔记，原笔记已移入回收站。",
+                )
+                // 顺带触发一次 AI 整理（若 AI 已配置，走常规 TEXT_SAVE 链路）
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        container.aiOrchestrator.maybeAnalyze(newNote.id, AiRunTrigger.TEXT_SAVE)
+                    }
+                }
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(message = e.message ?: "合并失败。")
+            }
+        }
+    }
+
+    /** 用选中的笔记做一次 AI 聚类分析，结果展示在 BatchOrganizeSheet 里。 */
+    fun analyzeSelectedNotes() {
+        val ids = _uiState.value.selectedNoteIds
+        if (ids.size < 2) {
+            _uiState.value = _uiState.value.copy(message = "至少选择 2 条笔记才能整理。")
+            return
+        }
+        val cfg = _uiState.value.settings.ai
+        if (!cfg.enabled || cfg.baseUrl.isBlank()) {
+            _uiState.value = _uiState.value.copy(
+                batchOrganize = _uiState.value.batchOrganize.copy(
+                    visible = true,
+                    error = "请先在设置中启用并配置 AI",
+                    loading = false,
+                ),
+            )
+            return
+        }
+        val pool = (_uiState.value.notes + _uiState.value.archivedNotes)
+            .filter { it.id in ids }
+        if (pool.size < 2) {
+            _uiState.value = _uiState.value.copy(message = "所选笔记不足。")
+            return
+        }
+        val inputs = pool.map { note ->
+            com.ydoc.app.model.BatchOrganizeNoteInput(
+                id = note.id,
+                title = note.title,
+                content = note.content,
+                category = note.category.name,
+                tags = note.tags,
+                created_at = note.createdAt,
+            )
+        }
+        _uiState.value = _uiState.value.copy(
+            selectionMode = false,
+            selectedNoteIds = emptySet(),
+            batchOrganize = _uiState.value.batchOrganize.copy(
+                visible = true,
+                loading = true,
+                error = null,
+                clusters = emptyList(),
+                appliedClusterIds = emptySet(),
+            ),
+        )
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    container.aiClient.batchOrganize(
+                        com.ydoc.app.model.BatchOrganizeRequest(notes = inputs, max_notes = inputs.size),
+                        cfg,
+                    )
+                }
+            }.onSuccess { result ->
+                _uiState.value = _uiState.value.copy(
+                    batchOrganize = _uiState.value.batchOrganize.copy(
+                        loading = false,
+                        totalAnalyzed = result.total_analyzed,
+                        clusters = result.clusters,
+                        appliedClusterIds = emptySet(),
+                        error = null,
+                    ),
+                )
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(
+                    batchOrganize = _uiState.value.batchOrganize.copy(
+                        loading = false,
+                        error = e.message ?: "整理失败",
                     ),
                 )
             }
@@ -873,7 +1037,12 @@ class AppViewModel(
     fun stopRecording() {
         val currentPriority = _uiState.value.draft.priority
         val currentSettings = _uiState.value.settings
-        _uiState.value = _uiState.value.copy(recording = _uiState.value.recording.copy(state = RecordingState.SAVING))
+        // 立刻收起 HeroCaptureCard，避免转写/上传阻塞把用户困在录音态
+        _uiState.value = _uiState.value.copy(
+            captureExpanded = false,
+            pendingQuickRecord = false,
+            recording = _uiState.value.recording.copy(state = RecordingState.SAVING),
+        )
         viewModelScope.launch {
             val app = getApplication<Application>()
             val noteResult = withContext(Dispatchers.IO) {
@@ -892,8 +1061,6 @@ class AppViewModel(
                 val completionMessage = pendingRecordingCompletionMessage
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
-                    captureExpanded = false,
-                    pendingQuickRecord = false,
                     message = completionMessage ?: result.buildUserMessage(null),
                 )
                 // sync 在后台独立运行，不阻塞 UI（AI 会在转写完成后自动触发）
@@ -903,8 +1070,6 @@ class AppViewModel(
             }.onFailure {
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
-                    captureExpanded = true,
-                    pendingQuickRecord = false,
                     message = it.message ?: "录音保存失败。",
                 )
             }

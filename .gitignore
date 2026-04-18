@@ -14,6 +14,9 @@ tmp/
 emu-*.xml
 emu-*.png
 nul
+.DS_Store
+**/.DS_Store
+.qwen/
 
 # Web 端构建产物
 relay_service/.venv/

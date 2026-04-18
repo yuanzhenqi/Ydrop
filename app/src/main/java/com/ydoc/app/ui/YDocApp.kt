@@ -71,6 +71,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -79,10 +80,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.activity.compose.BackHandler
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Merge
+import androidx.compose.material.icons.rounded.SelectAll
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
@@ -269,6 +285,12 @@ fun YDocApp(
         onClearSearch = viewModel::clearSearch,
         onToggleTagFilter = viewModel::toggleTagFilter,
         onClearTagFilter = viewModel::clearTagFilter,
+        onEnterSelectionMode = viewModel::enterSelectionMode,
+        onToggleSelection = viewModel::toggleSelection,
+        onSelectAllVisible = viewModel::selectAllVisible,
+        onExitSelectionMode = viewModel::exitSelectionMode,
+        onMergeSelected = viewModel::mergeSelectedNotes,
+        onAnalyzeSelected = viewModel::analyzeSelectedNotes,
     )
 }
 
@@ -353,7 +375,14 @@ private fun YDocScreen(
     onClearSearch: () -> Unit,
     onToggleTagFilter: (String) -> Unit,
     onClearTagFilter: () -> Unit,
+    onEnterSelectionMode: (String) -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onSelectAllVisible: () -> Unit,
+    onExitSelectionMode: () -> Unit,
+    onMergeSelected: () -> Unit,
+    onAnalyzeSelected: () -> Unit,
 ) {
+    BackHandler(enabled = state.selectionMode, onBack = onExitSelectionMode)
     val baseNotes = when (state.currentSection) {
         NoteListSection.INBOX -> state.notes
         NoteListSection.CALENDAR -> emptyList()
@@ -429,6 +458,20 @@ private fun YDocScreen(
                         }
                     },
                 )
+            } else if (state.selectionMode) {
+                CenterAlignedTopAppBar(
+                    title = { Text("已选 ${state.selectedNoteIds.size} 条") },
+                    navigationIcon = {
+                        IconButton(onClick = onExitSelectionMode) {
+                            Icon(Icons.Rounded.Close, contentDescription = "退出多选")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onSelectAllVisible) {
+                            Icon(Icons.Rounded.SelectAll, contentDescription = "全选")
+                        }
+                    },
+                )
             } else {
                 CenterAlignedTopAppBar(
                     title = { Text(if (showSettings) "设置" else "Ydrop") },
@@ -436,6 +479,11 @@ private fun YDocScreen(
                         if (!showSettings) {
                             IconButton(onClick = { searchMode = true }) {
                                 Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                            }
+                            if (state.currentSection == NoteListSection.INBOX && state.notes.size >= 2) {
+                                IconButton(onClick = onOpenBatchOrganize) {
+                                    Icon(Icons.Rounded.AutoAwesome, contentDescription = "批量整理")
+                                }
                             }
                         }
                         IconButton(onClick = { if (showSettings) onCloseSettings() else onOpenSettings() }) {
@@ -513,7 +561,6 @@ private fun YDocScreen(
                         state = state,
                         onShowSection = onShowSection,
                         onEmptyTrash = onEmptyTrash,
-                        onOpenBatchOrganize = onOpenBatchOrganize,
                     )
                 }
                 // Tag filter bar
@@ -547,43 +594,46 @@ private fun YDocScreen(
                         item { EmptyStateCardV2(section = state.currentSection) }
                 } else {
                     items(currentNotes, key = { it.id }) { note ->
-                        SwipeableNoteCard(
-                            section = state.currentSection,
-                            onSwipeRight = {
-                                when (state.currentSection) {
-                                    NoteListSection.INBOX -> performSwipeAction(
-                                        action = { onArchiveNote(note.id) },
-                                        label = "已归档",
-                                        undo = { onUnarchiveNote(note.id) },
+                        val isSelected = note.id in state.selectedNoteIds
+                        val selectionWrapper: @Composable (@Composable () -> Unit) -> Unit = { inner ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .then(
+                                        if (state.selectionMode) {
+                                            Modifier.border(
+                                                width = if (isSelected) 2.dp else 1.dp,
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(18.dp),
+                                            )
+                                        } else Modifier,
                                     )
-                                    NoteListSection.ARCHIVE -> performSwipeAction(
-                                        action = { onUnarchiveNote(note.id) },
-                                        label = "已取消归档",
-                                        undo = { onArchiveNote(note.id) },
+                                    .pointerInput(note.id, state.selectionMode) {
+                                        detectTapGestures(
+                                            onLongPress = {
+                                                if (!state.selectionMode) onEnterSelectionMode(note.id)
+                                            },
+                                            onTap = {
+                                                if (state.selectionMode) onToggleSelection(note.id)
+                                            },
+                                        )
+                                    },
+                            ) {
+                                inner()
+                                if (state.selectionMode) {
+                                    Icon(
+                                        imageVector = if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                                        contentDescription = if (isSelected) "已选中" else "未选中",
+                                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp)
+                                            .size(22.dp),
                                     )
-                                    NoteListSection.TRASH -> performSwipeAction(
-                                        action = { onRestoreNote(note.id) },
-                                        label = "已恢复",
-                                        undo = { onDeleteNote(note.id) },
-                                    )
-                                    else -> {}
                                 }
-                            },
-                            onSwipeLeft = {
-                                when (state.currentSection) {
-                                    NoteListSection.TRASH -> performSwipeAction(
-                                        action = { onDeletePermanently(note.id) },
-                                        label = "已彻底删除",
-                                        undo = null,  // 不可撤销
-                                    )
-                                    else -> performSwipeAction(
-                                        action = { onDeleteNote(note.id) },
-                                        label = "已移入回收站",
-                                        undo = { onRestoreNote(note.id) },
-                                    )
-                                }
-                            },
-                        ) {
+                            }
+                        }
+                        val noteCardContent = @Composable {
                             NoteCardV2(
                                 note = note,
                                 section = state.currentSection,
@@ -607,11 +657,75 @@ private fun YDocScreen(
                                 onCopy = { onCopyNote(note.id) },
                             )
                         }
+                        if (state.selectionMode) {
+                            selectionWrapper { noteCardContent() }
+                        } else {
+                            selectionWrapper {
+                                SwipeableNoteCard(
+                                    section = state.currentSection,
+                                    onSwipeRight = {
+                                        when (state.currentSection) {
+                                            NoteListSection.INBOX -> performSwipeAction(
+                                                action = { onArchiveNote(note.id) },
+                                                label = "已归档",
+                                                undo = { onUnarchiveNote(note.id) },
+                                            )
+                                            NoteListSection.ARCHIVE -> performSwipeAction(
+                                                action = { onUnarchiveNote(note.id) },
+                                                label = "已取消归档",
+                                                undo = { onArchiveNote(note.id) },
+                                            )
+                                            NoteListSection.TRASH -> performSwipeAction(
+                                                action = { onRestoreNote(note.id) },
+                                                label = "已恢复",
+                                                undo = { onDeleteNote(note.id) },
+                                            )
+                                            else -> {}
+                                        }
+                                    },
+                                    onSwipeLeft = {
+                                        when (state.currentSection) {
+                                            NoteListSection.TRASH -> performSwipeAction(
+                                                action = { onDeletePermanently(note.id) },
+                                                label = "已彻底删除",
+                                                undo = null,
+                                            )
+                                            else -> performSwipeAction(
+                                                action = { onDeleteNote(note.id) },
+                                                label = "已移入回收站",
+                                                undo = { onRestoreNote(note.id) },
+                                            )
+                                        }
+                                    },
+                                ) {
+                                    noteCardContent()
+                                }
+                            }
+                        }
                     }
                 }
             }
             }
-            if (!showSettings) {
+            if (state.selectionMode) {
+                MultiSelectActionBar(
+                    selectedCount = state.selectedNoteIds.size,
+                    section = state.currentSection,
+                    onMerge = onMergeSelected,
+                    onAnalyze = onAnalyzeSelected,
+                    onArchive = {
+                        state.selectedNoteIds.forEach { onArchiveNote(it) }
+                        onExitSelectionMode()
+                    },
+                    onDelete = {
+                        state.selectedNoteIds.forEach { onDeleteNote(it) }
+                        onExitSelectionMode()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .fillMaxWidth(),
+                )
+            } else if (!showSettings) {
                 HeroCaptureCard(
                     draft = state.draft,
                     captureExpanded = state.captureExpanded,
@@ -1160,7 +1274,11 @@ private fun SettingsCardTabbed(
             HorizontalDivider()
             when (selectedTab) {
                 SettingsTab.SYNC -> {
-                    WebDavSettingsSection(settings, onWebDavChange, onToggleWebDav, onTestWebDav)
+                    Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                        WebDavSettingsSection(settings, onWebDavChange, onToggleWebDav, onTestWebDav)
+                        HorizontalDivider()
+                        CalendarSyncSection()
+                    }
                 }
 
                 SettingsTab.TRANSCRIPTION -> {
@@ -1385,6 +1503,19 @@ private fun AiSettingsSection(
 private fun QuickRecordShortcutSection(
     onPinQuickRecordShortcut: () -> Boolean,
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var a11yEnabled by remember { mutableStateOf(isYdropAccessibilityEnabled(context)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                a11yEnabled = isYdropAccessibilityEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("快捷启动", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text("发布专用直录入口，方便系统快捷方式、桌面图标和厂商快捷启动绑定。", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1392,15 +1523,173 @@ private fun QuickRecordShortcutSection(
             onClick = { onPinQuickRecordShortcut() },
             label = { Text("创建桌面快捷录音") },
         )
+
+        HorizontalDivider()
+
+        Text("锁屏双击音量下键", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+        Text(
+            "启用无障碍服务后，双击音量下键（间隔 <500ms，包括锁屏）可立即启动录音，不改变音量键原有行为。",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = if (a11yEnabled) "✓ 已启用" else "○ 未启用",
+                color = if (a11yEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            AssistChip(
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                },
+                label = { Text(if (a11yEnabled) "打开无障碍设置" else "前往启用") },
+            )
+        }
     }
 }
+
+@Composable
+private fun MultiSelectActionBar(
+    selectedCount: Int,
+    section: NoteListSection,
+    onMerge: () -> Unit,
+    onAnalyze: () -> Unit,
+    onArchive: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val canMerge = selectedCount >= 2 && section == NoteListSection.INBOX
+    val canAnalyze = selectedCount >= 2 && section == NoteListSection.INBOX
+    val canArchive = selectedCount >= 1 && section == NoteListSection.INBOX
+    val canDelete = selectedCount >= 1 && section != NoteListSection.TRASH
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilledTonalButton(
+                onClick = onMerge,
+                enabled = canMerge,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Rounded.Merge, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("合并", style = MaterialTheme.typography.labelLarge)
+            }
+            FilledTonalButton(
+                onClick = onAnalyze,
+                enabled = canAnalyze,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("AI 整理", style = MaterialTheme.typography.labelLarge)
+            }
+            IconButton(onClick = onArchive, enabled = canArchive) {
+                Icon(Icons.Rounded.Archive, contentDescription = "归档")
+            }
+            IconButton(onClick = onDelete, enabled = canDelete) {
+                Icon(Icons.Rounded.Delete, contentDescription = "删除")
+            }
+        }
+    }
+}
+
+private fun isYdropAccessibilityEnabled(context: android.content.Context): Boolean {
+    val flat = android.provider.Settings.Secure.getString(
+        context.contentResolver,
+        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+    ) ?: return false
+    if (flat.isBlank()) return false
+    val expected = "${context.packageName}/com.ydoc.app.accessibility.YdropAccessibilityService"
+    return flat.split(':').any { it.equals(expected, ignoreCase = true) }
+}
+
+@Composable
+private fun CalendarSyncSection() {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasPermission by remember { mutableStateOf(hasCalendarPermission(context)) }
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        hasPermission = result.values.all { it == true }
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasPermission = hasCalendarPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("系统日历同步", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "授予日历读写权限后，Ydrop 会把新建的提醒同步到一个名为 “Ydrop” 的本地日历；取消提醒时自动删除对应事件。",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = if (hasPermission) "✓ 已授权" else "○ 未授权",
+                color = if (hasPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            AssistChip(
+                onClick = {
+                    if (hasPermission) {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    android.net.Uri.fromParts("package", context.packageName, null),
+                                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    } else {
+                        launcher.launch(
+                            arrayOf(
+                                android.Manifest.permission.READ_CALENDAR,
+                                android.Manifest.permission.WRITE_CALENDAR,
+                            ),
+                        )
+                    }
+                },
+                label = { Text(if (hasPermission) "管理权限" else "授予权限") },
+            )
+        }
+    }
+}
+
+private fun hasCalendarPermission(context: android.content.Context): Boolean =
+    androidx.core.content.ContextCompat.checkSelfPermission(
+        context,
+        android.Manifest.permission.READ_CALENDAR,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.WRITE_CALENDAR,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
 @Composable
 private fun NotesSectionRowV2(
     state: AppUiState,
     onShowSection: (NoteListSection) -> Unit,
     onEmptyTrash: () -> Unit,
-    onOpenBatchOrganize: () -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1436,12 +1725,6 @@ private fun NotesSectionRowV2(
             AssistChip(
                 onClick = onEmptyTrash,
                 label = { Text("清空", style = MaterialTheme.typography.labelSmall) },
-                modifier = Modifier.height(30.dp),
-            )
-        } else if (state.currentSection == NoteListSection.INBOX && state.notes.size >= 2) {
-            AssistChip(
-                onClick = onOpenBatchOrganize,
-                label = { Text("批量整理", style = MaterialTheme.typography.labelSmall) },
                 modifier = Modifier.height(30.dp),
             )
         }

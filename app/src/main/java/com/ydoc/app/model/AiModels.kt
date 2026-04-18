@@ -118,8 +118,18 @@ data class BatchOrganizeResponse(
 )
 
 @Serializable
+data class BatchOrganizeNoteInput(
+    val id: String,
+    val title: String,
+    val content: String,
+    val category: String,
+    val tags: List<String>,
+    val created_at: Long,
+)
+
+@Serializable
 data class BatchOrganizeRequest(
-    val note_ids: List<String>? = null,
+    val notes: List<BatchOrganizeNoteInput> = emptyList(),
     val max_notes: Int = 50,
 )
 
