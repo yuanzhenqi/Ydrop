@@ -188,8 +188,16 @@ class NoteRepository(
 
     suspend fun saveTranscript(noteId: String, transcript: String) {
         val note = getNote(noteId) ?: return
+        // 转写完成时同步更新 title：仅当当前 title 还是初始占位符（"语音记录 xxxxxx"）才替换，
+        // 避免覆盖用户已经手动改过的标题。修掉 WebDAV 拉回后标题一直是占位符的问题。
+        val newTitle = if (isVoicePlaceholderTitle(note.title)) {
+            extractVoiceTitle(transcript) ?: note.title
+        } else {
+            note.title
+        }
         noteDao.update(
             note.copy(
+                title = newTitle,
                 content = transcript,
                 transcript = transcript,
                 transcriptionStatus = TranscriptionStatus.DONE,
@@ -201,6 +209,50 @@ class NoteRepository(
                 lastSyncedAt = null,
             ).toEntity(),
         )
+    }
+
+    /** 扫描存量 VOICE note，把仍为占位符的 title 从 content/transcript 抽一个新标题。只修占位符。 */
+    suspend fun fixupVoiceTitles(): Int {
+        val candidates = noteDao.getAll()
+            .map { it.toModel() }
+            .filter {
+                it.source == NoteSource.VOICE &&
+                    isVoicePlaceholderTitle(it.title) &&
+                    it.content.isNotBlank() &&
+                    it.content != "语音记录，等待后续转写。"
+            }
+        var fixed = 0
+        candidates.forEach { note ->
+            val newTitle = extractVoiceTitle(note.transcript?.takeIf { it.isNotBlank() } ?: note.content)
+                ?: return@forEach
+            if (newTitle == note.title) return@forEach
+            noteDao.update(
+                note.copy(
+                    title = newTitle,
+                    updatedAt = System.currentTimeMillis(),
+                    status = NoteStatus.LOCAL_ONLY,
+                    lastSyncedAt = null,
+                ).toEntity(),
+            )
+            fixed += 1
+        }
+        return fixed
+    }
+
+    private fun isVoicePlaceholderTitle(title: String): Boolean {
+        val trimmed = title.trim()
+        if (trimmed == "语音记录") return true
+        // "语音记录 <6 位 id 后缀>"
+        return trimmed.startsWith("语音记录 ") &&
+            trimmed.removePrefix("语音记录 ").length in 1..10
+    }
+
+    private fun extractVoiceTitle(text: String): String? {
+        val firstLine = text.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.isNotBlank() }
+            ?: return null
+        return firstLine.take(36)
     }
 
     suspend fun markTranscriptionFailed(noteId: String, error: String) {

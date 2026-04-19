@@ -62,11 +62,20 @@ internal fun BatchOrganizeSheet(
 
             // 提示信息
             if (uiState.totalAnalyzed > 0 && !uiState.loading) {
-                Text(
-                    "AI 分析了 ${uiState.totalAnalyzed} 条笔记，识别出 ${uiState.clusters.size} 组建议",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "AI 分析了 ${uiState.totalAnalyzed} 条笔记，识别出 ${uiState.clusters.size} 组建议",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    uiState.lastAnalyzedAt?.let { ts ->
+                        Text(
+                            formatLastAnalyzed(ts),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
 
             // Loading / Error / Empty / Content
@@ -119,6 +128,17 @@ internal fun BatchOrganizeSheet(
                 }
             }
         }
+    }
+}
+
+private fun formatLastAnalyzed(timestampMs: Long): String {
+    val deltaSec = (System.currentTimeMillis() - timestampMs) / 1000
+    return "上次分析于 " + when {
+        deltaSec < 30 -> "刚刚"
+        deltaSec < 60 -> "${deltaSec} 秒前"
+        deltaSec < 3600 -> "${deltaSec / 60} 分钟前"
+        deltaSec < 86_400 -> "${deltaSec / 3600} 小时前"
+        else -> "${deltaSec / 86_400} 天前"
     }
 }
 

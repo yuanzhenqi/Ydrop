@@ -43,6 +43,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -288,6 +290,7 @@ fun YDocApp(
         onToggleSelection = viewModel::toggleSelection,
         onSelectAllVisible = viewModel::selectAllVisible,
         onExitSelectionMode = viewModel::exitSelectionMode,
+        onRemoveTagFromNote = viewModel::removeTagFromNote,
         onMergeSelected = viewModel::mergeSelectedNotes,
         onAnalyzeSelected = viewModel::analyzeSelectedNotes,
     )
@@ -378,6 +381,7 @@ private fun YDocScreen(
     onToggleSelection: (String) -> Unit,
     onSelectAllVisible: () -> Unit,
     onExitSelectionMode: () -> Unit,
+    onRemoveTagFromNote: (String, String) -> Unit,
     onMergeSelected: () -> Unit,
     onAnalyzeSelected: () -> Unit,
 ) {
@@ -595,33 +599,36 @@ private fun YDocScreen(
                     items(currentNotes, key = { it.id }) { note ->
                         val isSelected = note.id in state.selectedNoteIds
                         val selectionWrapper: @Composable (@Composable () -> Unit) -> Unit = { inner ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .then(
-                                        if (state.selectionMode) {
-                                            Modifier
-                                                .border(
-                                                    width = if (isSelected) 2.dp else 1.dp,
-                                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                                                    shape = RoundedCornerShape(18.dp),
-                                                )
-                                                .clickable { onToggleSelection(note.id) }
-                                        } else Modifier,
-                                    ),
-                            ) {
-                                inner()
-                                if (state.selectionMode) {
+                            if (state.selectionMode) {
+                                // 多选：左侧独立列放 checkbox；不再盖在卡片右上角
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onToggleSelection(note.id) },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
                                     Icon(
                                         imageVector = if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
                                         contentDescription = if (isSelected) "已选中" else "未选中",
                                         tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .padding(8.dp)
-                                            .size(22.dp),
+                                            .padding(end = 10.dp)
+                                            .size(24.dp),
                                     )
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .border(
+                                                width = if (isSelected) 2.dp else 1.dp,
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(18.dp),
+                                            ),
+                                    ) {
+                                        inner()
+                                    }
                                 }
+                            } else {
+                                inner()
                             }
                         }
                         val noteCardContent = @Composable {
@@ -648,6 +655,7 @@ private fun YDocScreen(
                                 onCopy = { onCopyNote(note.id) },
                                 selectionMode = state.selectionMode,
                                 onLongClick = { onEnterSelectionMode(note.id) },
+                                onRemoveTag = { tag -> onRemoveTagFromNote(note.id, tag) },
                             )
                         }
                         if (state.selectionMode) {
@@ -1572,27 +1580,25 @@ private fun MultiSelectActionBar(
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FilledTonalButton(
                 onClick = onMerge,
                 enabled = canMerge,
                 modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
             ) {
-                Icon(Icons.Rounded.Merge, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("合并", style = MaterialTheme.typography.labelLarge)
+                Text("合并", style = MaterialTheme.typography.labelLarge, maxLines = 1)
             }
             FilledTonalButton(
                 onClick = onAnalyze,
                 enabled = canAnalyze,
                 modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
             ) {
-                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("AI 整理", style = MaterialTheme.typography.labelLarge)
+                Text("AI 整理", style = MaterialTheme.typography.labelLarge, maxLines = 1)
             }
             IconButton(onClick = onArchive, enabled = canArchive) {
                 Icon(Icons.Rounded.Archive, contentDescription = "归档")
@@ -2467,6 +2473,7 @@ private fun NoteCardV2(
     onCopy: () -> Unit,
     selectionMode: Boolean = false,
     onLongClick: () -> Unit = {},
+    onRemoveTag: (String) -> Unit = {},
 ) {
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
@@ -2571,6 +2578,35 @@ private fun NoteCardV2(
             // ── Expanded detail ──
             if (expanded) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                // 展开态下所有 tag 可单独删除（点 × 从这条 note 移除该 tag）
+                if (note.tags.isNotEmpty()) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        note.tags.forEach { tag ->
+                            InputChip(
+                                selected = false,
+                                onClick = { /* 点 chip 本身不动作；只点 × 才删 */ },
+                                label = { Text("#$tag", style = MaterialTheme.typography.labelSmall) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { onRemoveTag(tag) },
+                                        modifier = Modifier.size(18.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Close,
+                                            contentDescription = "删除标签 $tag",
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
 
                 // Original content toggle
                 originalContent?.let { hiddenContent ->

@@ -106,6 +106,8 @@ data class BatchOrganizeUiState(
     val appliedClusterIds: Set<String> = emptySet(),
     val applyingClusterIds: Set<String> = emptySet(),
     val error: String? = null,
+    /** 上次成功分析的时间戳。null 表示从未分析过。 */
+    val lastAnalyzedAt: Long? = null,
 )
 
 class AppViewModel(
@@ -185,6 +187,19 @@ class AppViewModel(
             }
             refreshSettings()
             launch { autoSyncOnStart() }
+            launch { fixupVoiceTitlesOnce() }
+        }
+    }
+
+    /** 一次性修复：把 WebDAV 拉回污染成占位符的语音笔记 title，从 content/transcript 抽首行。 */
+    private suspend fun fixupVoiceTitlesOnce() {
+        runCatching {
+            if (container.settingsStore.isVoiceTitleFixupDone()) return@runCatching
+            val fixed = withContext(Dispatchers.IO) { container.noteRepository.fixupVoiceTitles() }
+            container.settingsStore.markVoiceTitleFixupDone()
+            if (fixed > 0) {
+                _uiState.value = _uiState.value.copy(message = "已修复 $fixed 条语音笔记的标题。")
+            }
         }
     }
 
@@ -359,15 +374,26 @@ class AppViewModel(
     }
 
     fun openBatchOrganize() {
+        val current = _uiState.value.batchOrganize
         _uiState.value = _uiState.value.copy(
-            batchOrganize = _uiState.value.batchOrganize.copy(visible = true, error = null),
+            batchOrganize = current.copy(visible = true, error = null),
         )
-        analyzeBatch()
+        // 缓存优先：首次打开（无 clusters 且非 loading）才自动分析；
+        // 有上次结果的情况下用户需要点「重新分析」才重跑。
+        if (current.clusters.isEmpty() && !current.loading && current.lastAnalyzedAt == null) {
+            analyzeBatch()
+        }
     }
 
     fun closeBatchOrganize() {
+        // 只收起不清空：保留 clusters / lastAnalyzedAt，下次打开仍能看到上次结果。
         _uiState.value = _uiState.value.copy(
-            batchOrganize = BatchOrganizeUiState(),  // 关闭后完全重置
+            batchOrganize = _uiState.value.batchOrganize.copy(
+                visible = false,
+                error = null,
+                loading = false,
+                applyingClusterIds = emptySet(),
+            ),
         )
     }
 
@@ -422,6 +448,7 @@ class AppViewModel(
                         clusters = result.clusters,
                         appliedClusterIds = emptySet(),
                         error = null,
+                        lastAnalyzedAt = System.currentTimeMillis(),
                     ),
                 )
             }.onFailure { e ->
@@ -563,6 +590,7 @@ class AppViewModel(
                         clusters = result.clusters,
                         appliedClusterIds = emptySet(),
                         error = null,
+                        lastAnalyzedAt = System.currentTimeMillis(),
                     ),
                 )
             }.onFailure { e ->
@@ -795,6 +823,20 @@ class AppViewModel(
             }
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { container.aiOrchestrator.maybeAnalyze(note.id, AiRunTrigger.TEXT_SAVE) }
+            }
+        }
+    }
+
+    fun removeTagFromNote(noteId: String, tag: String) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val note = container.noteRepository.getNote(noteId) ?: return@withContext
+                    if (tag !in note.tags) return@withContext
+                    container.noteRepository.saveNote(note.copy(tags = note.tags - tag))
+                }
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(message = e.message ?: "删除标签失败。")
             }
         }
     }

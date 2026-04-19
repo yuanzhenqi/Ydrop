@@ -24,6 +24,9 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE status != 'SYNCED' AND isTrashed = 0 ORDER BY updatedAt ASC")
     suspend fun getPendingSync(): List<NoteEntity>
 
+    @Query("SELECT * FROM notes")
+    suspend fun getAll(): List<NoteEntity>
+
     @Query("SELECT * FROM notes WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): NoteEntity?
 

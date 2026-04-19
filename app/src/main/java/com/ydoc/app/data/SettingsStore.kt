@@ -15,6 +15,7 @@ import com.ydoc.app.model.VolcengineConfig
 import com.ydoc.app.model.defaultAiPromptTemplate
 import com.ydoc.app.model.legacyAiPromptTemplate
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore(name = "ydoc_settings")
@@ -109,7 +110,19 @@ class SettingsStore(
         return legacyPrompt
     }
 
+    suspend fun isVoiceTitleFixupDone(): Boolean {
+        val prefs = context.settingsDataStore.data.first()
+        return prefs[Keys.voiceTitleFixupDone] ?: false
+    }
+
+    suspend fun markVoiceTitleFixupDone() {
+        context.settingsDataStore.edit { prefs ->
+            prefs[Keys.voiceTitleFixupDone] = true
+        }
+    }
+
     private object Keys {
+        val voiceTitleFixupDone = booleanPreferencesKey("voice_title_fixup_done_v1")
         val relayBaseUrl = stringPreferencesKey("relay_base_url")
         val relayToken = stringPreferencesKey("relay_token")
         val relayEnabled = booleanPreferencesKey("relay_enabled")
