@@ -10,6 +10,8 @@ relay_service/app/__pycache__/
 .kotlin/
 .android-emu-home/
 .claude/
+.cc-connect/
+docs/attachments/
 tmp/
 emu-*.xml
 emu-*.png

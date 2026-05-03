@@ -642,3 +642,201 @@ Web 端新增两页：
 - [ ] NoteCard 展开后 Markdown 代码块 / 列表 / 任务项 / 引用样式正确
 - [ ] 日历页新建提醒，选择「每周」，创建后列表里能看到 🔁 chip
 - [ ] 重启 relay 后 SQLite 老数据能自动迁移出 recurrence 字段（`_migrate()` 生效）
+
+---
+
+## 里程碑 J — AI 助手看不到笔记修复 + 链接识别 + 图片识别（2026-04-22）
+
+一轮里把三件事压进同一个分支：
+1. 修 AI 助手「看不到笔记」的长期体感 bug；
+2. 引入链接识别 + 预览卡 + AI 摘要，让「裸 URL」笔记也能被整理；
+3. 引入图片附件 + 本地 OCR + 服务端 Vision AI 双通道，让截图 / 相册图也能进 inbox。
+
+> ⚠️ 本轮改动在无 JDK 环境下撰写，所有 Kotlin 改动**尚未本地编译**，relay 侧 Python 模块已通过 `py_compile`。用户端跑一次 `./gradlew lint assembleDebug` 是合入前必须的一步。
+
+### Phase 0 — AI 助手看不到笔记（5 点根因 → 修复）
+
+AgentScreen 里「AI 一直说没找到我的笔记」其实是多个小问题叠加，不是单一 bug：
+
+| 根因 | 修法 |
+|------|------|
+| `NoteDao.observeActive()` 把归档笔记全过滤掉 → 问「归档里 X 相关」必然失败 | 新增 `observeAgentContextNotes()`（`WHERE isTrashed = 0`），`AgentRepository.sendMessageInternal` 改走它 |
+| `ChatFilter.max_notes=30` 硬裁 + App 端只取 60 条 | App 端 `take(80)` + 显式传 `filter.maxNotes = 80`，server 端 `ChatFilter` 加 `field_validator` cap 到 `[1, 200]` |
+| `content[:500]` 把长笔记关键段截掉 | 新建 `_clip_note_content(s, limit=1500)` 带「…（省略 N 字）」提示 |
+| server 再按 `created_at` 排序，覆盖掉 App 已按 `pinned+updatedAt` 排好的语义 | 移除 inline_notes 分支里的 `candidates.sort(...)` |
+| 系统 prompt「如果答案不在笔记里，明确说没有找到」太硬，导致相关线索也被拒答 | 改成分层：直接答案 → 相关线索（并注明）→ 完全没有才说「没找到」 |
+
+并在两端加端到端日志方便下次定位：
+- Android：`sendMessage inline_notes_size=80 preview=[abcd12:会议纪要, ...]`
+- Relay：`chat: using N inline_notes (filtered from M)` + `chat: notes_for_llm=N preview=[...]`
+
+涉及文件：
+- `app/.../data/local/NoteDao.kt` `data/NoteRepository.kt` `data/AgentRepository.kt`
+- `relay_service/app/routes_ai.py`
+
+### Phase 1 — 链接识别 + 预览卡 + AI 摘要
+
+**架构**：Note 保存 → URL 扫描 → `LinkPreviewWorker` 排队 → 打 `/api/links/preview` → 回写 `note.linkPreviewsJson` → Compose 展开态渲染预览卡 → AI 整理 pipeline 把 og + summary 注入 prompt。
+
+**Room migration 17→18**：`notes` 加 `linkPreviewsJson TEXT`。
+
+**Relay 端 `POST /api/links/preview`**：
+- `urllib.request` 拉页面（UA + 512KB cap），BeautifulSoup4 取 og/title/description/image/site_name；
+- `readability-lxml` 抽首屏正文 3000 字；
+- 可选调 LLM 生成 150 字中文摘要（走现有 `call_llm`）。
+- `requirements.txt` 加 beautifulsoup4 / lxml / readability-lxml；Dockerfile 装 libxml2 / libxslt 运行时。
+
+**Android**：
+- `ai/LinkPreviewClient.kt` 调 relay；
+- `sync/LinkPreviewWorker.kt` + `extractUrls`（http(s) 正则 + 行尾标点剥除）；
+- `NoteRepository.onNoteContentChanged` 回调在 `createTextNote / saveEditedNote / saveNote / saveTranscript / upsertFromRemote` 都触发；已成功抓过且 <7 天的结果直接复用，不重复请求；
+- `NoteDao.updateLinkPreviewsJson` 只写该列不动 updatedAt / status，避免把笔记打回 LOCAL_ONLY 触发一次无意义的 WebDAV 推送。
+
+**UI**：`ui/components/LinkPreviewCard.kt`（Coil 加载 og:image；title/summary/description 三层 fallback；error 降级 chip；点击开系统浏览器）。接到 `NoteCardV2` 展开态。
+
+**AI 整理管道注入**：
+- `AiAnalyzeRequest.linkPreviews` 新字段；
+- Kotlin RelayAiClient：`encodeProviderRequest` 只放有用字段（url/title/summary/siteName），`buildSystemPrompt` 插入 `LINK_PREVIEWS` 段；
+- Relay `ai.py` 的 `build_system_prompt` 同步插 `LINK_PREVIEWS` 段。
+- `AiOrchestrator` 过滤掉 error / 没 title+summary 的预览，不给模型看噪声。
+
+依赖：`io.coil-kt:coil-compose:2.6.0`。
+
+### Phase 2 — 图片识别（OCR + Vision AI 双通道）
+
+**Room migration 18→19**：`notes` 加 `attachmentsJson TEXT`。新模型 `NoteAttachment(id, type, localPath, thumbPath, ocrText, aiDescription, aiStructuredJson, analyzeError, ...)`。
+
+**入口**：
+- Manifest 增加 `ACTION_SEND` / `ACTION_SEND_MULTIPLE` + `image/*` intent-filter；
+- `MainActivity.handleShareIntent`：系统分享进来的单张 / 多张图 → `AttachmentStore.import` 拷到私有目录 + 生成 480px 缩略图 → `NoteRepository.createAttachmentNote` 建新 IMAGE 笔记 → 每张排 `ImageAnalyzeWorker` → 自动跳到新笔记。
+- PhotoPicker 按钮下一轮补（系统分享已经闭环，可用性不受阻塞）。
+
+**本地 OCR**：`ai/ImageOcrService` 用 ML Kit `text-recognition` + `text-recognition-chinese`，跑两次取结果更长那版，全 offline。
+
+**服务端 Vision AI**：
+- `routes_images.py POST /api/images/analyze`：multipart 上传 → 存 `<static_dir>/images/<uuid>.<ext>` → 返回 `/static/images/...` URL；
+- 调 `ai_provider.call_vision`（新增）：OpenAI vision（`data:image/...;base64,...`）+ Anthropic vision（`content[].type=image + source.base64`）双协议，AUTO 先试 OpenAI 再回退 Anthropic；
+- 返回 `{remote_url, description, keywords[], actionable_items[], dates[]}`，parse 失败降级把整段当 description。
+- `main.py` 新增 `app.mount("/static/images", StaticFiles(...))`（必须在 Next.js 的 catch-all `{full_path:path}` 之前挂）。
+
+**Android 后台分析**：
+- `ai/ImageAnalyzeClient.kt` multipart 打过去；
+- `sync/ImageAnalyzeWorker`：两阶段 — 先本地 OCR（offline 也能做），再 relay vision；任一步异常写 `analyzeError` 让 UI 降级。已成功分析过的 attachment 不重复烧 token。
+
+**UI**：`ui/components/NoteAttachmentRow.kt` 横向滚动缩略图 + 分析中转圈 indicator + 「i」按钮展开 OCR / AI 描述底部面板 + error 条。接到 `NoteCardV2` 展开态。
+
+**AI 整理管道注入**：
+- `AiAnalyzeRequest.imageContexts: List<ImageContext(ocrText, aiDescription, keywords)>`；
+- `AiOrchestrator` 从 `note.attachments` 打平并从 `aiStructuredJson` 解出 keywords；
+- Kotlin / Python prompt 都插入 `IMAGE_CONTEXTS` 段。
+
+依赖：
+- Kotlin：`com.google.mlkit:text-recognition:16.0.1`、`text-recognition-chinese:16.0.1`、`kotlinx-coroutines-play-services:1.8.1`。
+- Python：`beautifulsoup4 / lxml / readability-lxml`（Phase 1 带过来）。
+
+### 关键决策
+
+- **架构副作用走 callback，不再直接把 Context 扔进 NoteRepository**：`NoteRepository` 构造函数多一个 `onNoteContentChanged: ((String) -> Unit)?`，`AppContainer` 注入 `LinkPreviewWorker.schedule` 调用，领域层保持不 Android 耦合。
+- **`updateLinkPreviewsJson` / `updateAttachmentsJson` 故意不动 `updatedAt / status / lastSyncedAt`**：后台抓取/识别是系统副作用，不该把笔记推回 LOCAL_ONLY 再多触发一次 WebDAV 同步。
+- **Vision 协议两路**：OpenAI 用 `image_url` data URI，Anthropic 用 `content[].type=image + base64`。两路在 `ai_provider.call_vision` 统一封装；AUTO 沿用现有 OpenAI-first-then-Anthropic 策略。
+- **图片存 `static_dir/images/` + `/static/images` mount**：不依赖 Next.js 是否构建，AI 分析端点任何时候都能返回可访问的 `remote_url`。
+- **链接预览已成功的 7 天内不重抓**：节省 LLM 摘要的开销，但允许 error 态在下一次保存时重试（因为抓取瞬时失败很常见）。
+- **`encodeDefaults = false` 的坑已在 Phase 0 里规避**：inline_notes 的字段默认值刚好和 pydantic 默认值一致，不会因为省略导致 server 端空字段。
+
+### 遗留 / 待办
+
+- Android 主界面的「+ 加图」PhotoPicker 按钮（目前只支持"从系统分享到 Ydrop"路径）。
+- 编辑页对附件的增删 UI（目前展开态只能查看，不能删单条附件；可以用 `NoteRepository.removeAttachmentFromNote` 已经落地的 API 挂一个 ×）。
+- 图片附件的 WebDAV 同步：当前图片不走 WebDAV（Android 独占），跨端同步要到再议（relay `remote_url` 已经可以访问，web 端能显示）。
+- 链接预览卡的折叠态图片：目前只在展开卡里显示，收起态不透出——如果卡片列表变得太密集再给一个「首条预览 chip」兜底。
+
+### 必做真机回归清单
+
+- [ ] 写 5 条笔记覆盖：最近文本 / 归档文本 / 长笔记（>800 字）/ 无标题 / 带标签。AI 助手分别提问，归档 + 长笔记都应命中（之前会"没找到"）。
+- [ ] `adb logcat -s YDOC_AGENT:D` 看到 `inline_notes_size=...` 且 preview 有内容。
+- [ ] relay 日志看到 `chat: notes_for_llm=N preview=[...]` 与客户端一致。
+- [ ] 写一条只含 https 链接的笔记：10-30 秒内卡片展开能看到预览（title+summary）。断网态下只显示 error chip 但仍能点开浏览器。
+- [ ] AI 整理重新跑：suggestedTitle / category 能反映链接内容，不再是空或「链接」。
+- [ ] 从系统相册分享单张/多张图到 Ydrop：自动跳新笔记；缩略图出现；「i」按钮看到 OCR 文字（本地）和 AI 描述（relay vision）。断网态只看到 OCR + 「识别失败：…」。
+- [ ] 升级 18→19 的设备：旧笔记不丢，新笔记含 `attachmentsJson`。
+- [ ] Room migration 17→18→19 按顺序跑通（用一个低版本 ydoc.db 启动 app）。
+- [ ] 重启 app 后 LinkPreviewWorker / ImageAnalyzeWorker 有未完成任务会自动继续（`WorkManager` 默认行为）。
+- [ ] WebDAV 双向同步：attachmentsJson / linkPreviewsJson 字段的 update **不触发**重推远端（markdown frontmatter 不变）。
+
+---
+
+## 里程碑 K — 上线后 5 项打磨（2026-05-02）
+
+里程碑 J 真机/服务端联调时暴露的 5 个体感问题，按"紧急 → 不急"顺序打掉。`./gradlew lint assembleDebug` 全部通过。
+
+### 1. 智能助理时间识别错位
+
+**根因**：`relay_service/app/routes_ai.py` 的 `_call_chat_provider` 系统 prompt **完全没有"当前时间"锚点**，LLM 只能看到笔记 JSON 里的 `created_at` epoch ms，回答"今天/这周/最近 N 天"全靠瞎猜。AI 整理（`ai.py`）有 TIME RESOLUTION RULES，但 chat 链路一直没复用。
+
+**修法**：
+- `routes_ai.py`：`ChatRequest` 新增 `current_time_epoch_ms / current_timezone / current_time_text` 三个可选字段；新 `_build_time_context()` 兜底；`_call_chat_provider` 在 system prompt 顶部注入 `Current system time / timezone / Unix milliseconds` + 中文相对时间换算规则（今天=0-24 时、本周=本周一 0:00 至本周日 24:00 等）。
+- `AgentApiClient.kt`：`chat()` 加三个对应入参，`ChatRequestBody` 加序列化字段。
+- `AgentRepository.kt`：调 `api.chat` 时填 `System.currentTimeMillis()` + `TimeZone.getDefault().id` + 客户端时区格式化的本地时间字符串。
+
+### 2. 悬浮窗滑动归档/删除不生效
+
+**根因**：`OverlayHandleService.attachStripSwipeHelper` 的 `getMovementFlags` 用 `stripAdapter.getItemOrNull(viewHolder.bindingAdapterPosition)` 判断是否是 NoteStripItem。问题：`bindingAdapterPosition` 在动画 / 即将 detach 的瞬间会回 `RecyclerView.NO_POSITION (-1)`，`getItemOrNull(-1)` 直接返回 null → 落到 else 返回 0,0 → 滑动**完全关闭**。
+
+**修法**：
+- `OverlayStripAdapter`：`private companion object` 提升为 `companion object`，让 `VIEW_TYPE_NOTE` 等常量对外可见。
+- `OverlayHandleService`：`getMovementFlags` 改用 `viewHolder.itemViewType == OverlayStripAdapter.VIEW_TYPE_NOTE` 判断（itemViewType 在 `onCreateViewHolder` 时定型，整个生命周期不变）；`onChildDraw` 同步换。
+- `onSwiped` 加 `AppLogger.overlay("strip swiped dir=... note=...")`，复现时 `adb logcat -s YDOC_OVERLAY:D` 能直接看到方向 + note id。
+
+### 3. AI 整理后无法恢复原内容
+
+**现状**：`Note.originalContent` 早就有（Migration 已加），`applyAiSuggestion` 也存了备份；展开态有「查看原内容」开关——**只能看，不能还原**。
+
+**修法**：
+- `AppViewModel.restoreOriginalContent(noteId)`：把 `content = originalContent`、`originalContent = null`，suggestion 状态打回 `DISMISSED`。**只回滚 content**，title / category / priority / tags / colorToken 都不动——用户在 apply 之后可能又手改过这些字段，一刀切回滚反而会丢人为意图。
+- `YDocApp.kt` NoteCardV2 展开态：原"查看原内容"那行扩成两个按钮，新的「还原为原内容」用 `colorScheme.error` 染红；点击弹 `AlertDialog` 二次确认（"标题、分类、优先级、标签保留不变。还原后无法撤销。"）。
+- `onRestoreOriginalContent: (String) -> Unit` 通过四层参数链路下发（root composable → notes section → NoteCardV2）。
+
+### 4. URL 预览出现两个、其中一个永远 404
+
+**根因怀疑**：同一逻辑 URL 被解析成两个不同字符串（一种带 / 不带 `utm_*`、带 / 不带 trailing `/`、带 / 不带 fragment 等等），`distinct()` 失效；同时 relay 端如果 og:title / `<title>` 都为空会返回空 title，UI 渲染成空预览框被用户当成"404"。
+
+**修法**：
+- `LinkPreviewWorker.kt`：抽 URL 后增加 `canonicalizeUrl()` 步骤——小写 host、去 trailing `/`、剥常见追踪参数（`utm_*`、`spm`、`share`、`from`、`ref*`、`scene`、`src`、`session_id`、`weibo_id`、`_t`、`fr` 等），再 `distinct().take(5)`。加 `AppLogger.relay("note=$noteId raw_urls=N dedup=N list=...")` 复现日志。
+- `relay_service/app/routes_links.py`：`_extract_meta` 在 og:title / `<title>` 都空时用 `host + 第一段 path` 兜底当 title，避免 UI 看到空预览框。
+
+### 5. OCR 识别率低 + 喂 AI 截断太狠
+
+**已确认**：OCR 内容**早就在喂 AI 整理**（`AiOrchestrator.imageContexts` + `IMAGE_CONTEXTS` prompt 段，Kotlin 和 Python 双侧都在）。问题是 OCR 自身识别率 + 截断长度。
+
+**修法**：
+- `ImageOcrService.kt` 完全重写：
+  - **行级 union 替代 max-length**——之前 `if (chineseText.length >= latinText.length) chineseText else latinText`，latin recognizer 对中文返回长但糟糕的乱码，长度大却信息更差。改为把两路按行拆分进 `LinkedHashSet` 合并去重，保留首次出现顺序。
+  - **小图自动放大**：短边 < 1024 时按 2x 放大喂 ML Kit；< 512 时 3x。手机截屏小字识别率明显提升。
+  - **EXIF rotation**：从 `androidx.exifinterface` 读 orientation 传给 `InputImage.fromBitmap(bmp, rotation)`。横拍图被识别成"侧着"是常见漏识别原因。
+  - 任一路抛异常都 runCatching 兜底，最差降级成空串。
+- AI 截断放宽（OCR 是关键内容，截太狠丢 todo）：
+  - `RelayAiClient.kt` wire 端 OCR 800 → 1500、aiDescription 400 → 800、keywords 8 → 10；prompt 端 OCR 300 → 800、aiDescription 240 → 600。
+  - `relay_service/app/ai.py` `_render_image_contexts_section` 同步：300 → 800 / 240 → 600 / 8 → 10。
+
+### 关键决策
+
+- **修复用 viewType 而非 position 判断 swipe**：position-based 在 RecyclerView 动画/重绑期间不稳，是 ItemTouchHelper 用法的常见 footgun；viewType 在 `onCreateViewHolder` 时定型，整个生命周期稳定。
+- **还原原内容只动 content**：用户对 AI 整理的不满主要在正文改写，title/category/priority 是产品语义，apply 之后可能被手改过；激进回滚会破坏人为意图。
+- **URL 归一化只剥追踪参数，不剥业务参数**：保留 `?id=`、`?q=` 这种语义参数；只去 utm/spm/from 这种来源标记。fragment 保留——一些 SPA 的 `#section` 是关键路由。
+- **OCR 双路按行 union 而非字符 union**：行是 OCR 输出的最小语义单位，按行去重既能补漏又不会把同一段反复贴。
+
+### 遗留 / 待办
+
+- 悬浮窗滑动修复需要真机回归确认（`adb logcat -s YDOC_OVERLAY:D` 看 `strip swiped dir=...`）。
+- URL 预览归一化是否过度激进——观察一阵看会不会把用户实际想区分的 URL 错合。
+- OCR 行级 union 在某些场景可能仍漏字（latin/chinese 都漏的同一行）；如还有问题考虑加第三路（如 PaddleOCR 但要打包模型）。
+- 时间锚点修复后，AI 助手是否能正确回答"上周做了什么"还需要真实多日数据验证。
+
+### 手动回归清单
+
+- [ ] 智能助理问"今天 / 这周 / 上周"的笔记，回答里日期范围正确。
+- [ ] `adb logcat -s YDOC_OVERLAY:D`：滑动 note 卡左/右，看到 `strip swiped dir=LEFT->trash` 或 `RIGHT->archive`。
+- [ ] 一条 AI 整理过的笔记，展开态点「还原为原内容」→ 弹确认框 → 还原后正文 = 原内容、标题/分类/优先级/标签不变。
+- [ ] 原本带 utm 参数的 URL 笔记，预览只剩 1 个；之前总是 404 那个 box 消失。
+- [ ] 一张小字截图保存进笔记，OCR 文字比之前更全；AI 整理出的 todo 能反映截图里的关键任务。
+
