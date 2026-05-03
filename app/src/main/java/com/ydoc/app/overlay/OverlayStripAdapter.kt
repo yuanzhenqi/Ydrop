@@ -182,12 +182,12 @@ class OverlayStripAdapter(
         }
     }
 
-    private companion object {
+    companion object {
         const val VIEW_TYPE_COMPOSER = 0
         const val VIEW_TYPE_NOTE = 1
         const val VIEW_TYPE_EXPANDED = 2
         const val VIEW_TYPE_EDITING = 3
-        const val PAYLOAD_COMPOSER_STATE = "payload_composer_state"
+        internal const val PAYLOAD_COMPOSER_STATE = "payload_composer_state"
     }
 }
 

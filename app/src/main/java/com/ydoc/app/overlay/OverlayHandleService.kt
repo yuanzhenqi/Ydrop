@@ -50,6 +50,7 @@ import com.ydoc.app.MainActivity
 import com.ydoc.app.R
 import com.ydoc.app.appContainer
 import com.ydoc.app.data.AppContainer
+import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.Note
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NotePriority
@@ -494,12 +495,15 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
 
     private fun attachStripSwipeHelper() {
         ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT) {
+            // 关键：用 itemViewType 而不是 bindingAdapterPosition 判断是否允许滑动。
+            // bindingAdapterPosition 在动画 / 即将 detach 的瞬间会回 NO_POSITION (-1)，
+            // 之前用 getItemOrNull(-1)→null→returns 0,0 直接关掉了滑动，呈现"滑动完全不起作用"。
+            // itemViewType 在 onCreateViewHolder 时就定型，整个生命周期不变。
             override fun getMovementFlags(
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder,
             ): Int {
-                val item = stripAdapter.getItemOrNull(viewHolder.bindingAdapterPosition)
-                return if (item is OverlayStripItem.NoteStripItem) {
+                return if (viewHolder.itemViewType == OverlayStripAdapter.VIEW_TYPE_NOTE) {
                     makeMovementFlags(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT)
                 } else {
                     makeMovementFlags(0, 0)
@@ -517,11 +521,16 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             override fun getSwipeEscapeVelocity(defaultValue: Float): Float = defaultValue * 0.45f
 
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val item = stripAdapter.getItemOrNull(viewHolder.bindingAdapterPosition) as? OverlayStripItem.NoteStripItem
+                val pos = viewHolder.bindingAdapterPosition
+                val item = stripAdapter.getItemOrNull(pos) as? OverlayStripItem.NoteStripItem
                 if (item == null) {
-                    stripAdapter.notifyItemChanged(viewHolder.bindingAdapterPosition)
+                    AppLogger.overlay("strip swipe ignored: pos=$pos no NoteStripItem")
+                    if (pos != RecyclerView.NO_POSITION) stripAdapter.notifyItemChanged(pos)
                     return
                 }
+                AppLogger.overlay(
+                    "strip swiped dir=${if (direction == ItemTouchHelper.RIGHT) "RIGHT->archive" else "LEFT->trash"} note=${item.note.id.take(6)}",
+                )
                 when (direction) {
                     ItemTouchHelper.RIGHT -> onArchive(item.note.id)
                     ItemTouchHelper.LEFT -> onTrash(item.note.id)
@@ -537,8 +546,9 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
                 actionState: Int,
                 isCurrentlyActive: Boolean,
             ) {
-                val item = stripAdapter.getItemOrNull(viewHolder.bindingAdapterPosition)
-                if (actionState == ItemTouchHelper.ACTION_STATE_SWIPE && item is OverlayStripItem.NoteStripItem) {
+                if (actionState == ItemTouchHelper.ACTION_STATE_SWIPE &&
+                    viewHolder.itemViewType == OverlayStripAdapter.VIEW_TYPE_NOTE
+                ) {
                     drawSwipeBackground(c, viewHolder.itemView, dX)
                 }
                 super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
@@ -1174,7 +1184,15 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         }
 
         vibrateHandle()
-        runCatching { appContainer.audioRecorder.start() }.getOrElse {
+
+        // Android 14+ 的 FOREGROUND_SERVICE_MICROPHONE 要求进程先进入 FGS 状态才能 access MIC。
+        // 悬浮窗 service 处于后台，必须先把 RecordingService 拉起，等它 startForeground 完再录音。
+        ContextCompat.startForegroundService(this, Intent(this, RecordingService::class.java))
+        delay(120)
+
+        val startError = runCatching { appContainer.audioRecorder.start() }.exceptionOrNull()
+        if (startError != null) {
+            stopService(Intent(this, RecordingService::class.java))
             overlayState = overlayState.copy(
                 isRecording = false,
                 recordingSeconds = 0,
@@ -1183,7 +1201,8 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             )
             refreshStripItems()
             render()
-            toast("无法开始录音。")
+            Log.w(TAG, "overlay audio start failed", startError)
+            toast(startError.message?.takeIf { it.isNotBlank() } ?: "无法开始录音。")
             return
         }
 
@@ -1200,7 +1219,6 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
             render()
         }
 
-        ContextCompat.startForegroundService(this, Intent(this, RecordingService::class.java))
         recordingTimerJob?.cancel()
         if (origin == OverlayRecordingOrigin.COMPOSER_BUTTON) {
             recordingTimerJob = serviceScope.launch {
@@ -1231,27 +1249,56 @@ class OverlayHandleService : Service(), OverlayStripAdapter.Listener {
         }
 
         val overlaySaveSettings = appContainer.settingsStore.settingsFlow.first()
-        val overlaySaveResult = withContext(Dispatchers.IO) {
+        // 第一阶段：快速写本地 note，立刻恢复悬浮窗 UI。
+        val createResult = withContext(Dispatchers.IO) {
             runCatching {
-                appContainer.voiceNoteProcessor.stopAndSave(
-                    priority = selectedPriority,
-                    relayConfig = overlaySaveSettings.relay,
-                    volcengineConfig = overlaySaveSettings.volcengine,
-                    wifiOnly = currentWebDavWifiOnly(),
-                )
+                appContainer.voiceNoteProcessor.stopAndCreateNote(selectedPriority)
             }
         }
-
         stopService(Intent(this, RecordingService::class.java))
-        overlaySaveResult.onSuccess { result ->
+
+        createResult.onSuccess { result ->
             if (origin == OverlayRecordingOrigin.ENTRY_HOLD) {
                 Log.d(TAG, "ENTRY_SAVE_SUCCESS")
                 restoreExpandedStrip(result.note)
             } else {
                 collapseToHandle()
             }
-            val syncError = runCatching { syncIfEnabled(result.note) }.exceptionOrNull()?.message
-            toast(result.buildUserMessage(syncError))
+            val uploadingRelay = overlaySaveSettings.relay.enabled
+            val submitVolc = uploadingRelay && overlaySaveSettings.volcengine.enabled
+            toast(
+                when {
+                    submitVolc -> "录音已保存，后台上传并转写中…"
+                    uploadingRelay -> "录音已保存，后台上传中转服务中…"
+                    else -> result.buildUserMessage(null)
+                },
+            )
+            // 第二阶段：relay upload + 豆包转写 + AI 分析，serviceScope 独立 coroutine。
+            serviceScope.launch(Dispatchers.IO) {
+                val processed = runCatching {
+                    if (uploadingRelay) {
+                        appContainer.voiceNoteProcessor.processNoteInBackground(
+                            noteId = result.note.id,
+                            relayConfig = overlaySaveSettings.relay,
+                            volcengineConfig = overlaySaveSettings.volcengine,
+                            wifiOnly = currentWebDavWifiOnly(),
+                        )
+                    } else {
+                        result
+                    }
+                }
+                val finalResult = processed.getOrNull()
+                val syncError = runCatching {
+                    syncIfEnabled(finalResult?.note ?: result.note)
+                }.exceptionOrNull()?.message
+                finalResult?.remoteError?.takeIf { it.isNotBlank() }?.let { toast(it) }
+                processed.exceptionOrNull()?.let { e ->
+                    toast(e.message?.take(200) ?: "后台处理失败。")
+                }
+                if (syncError != null && finalResult != null) {
+                    toast("WebDAV 同步失败：$syncError")
+                }
+            }
         }.onFailure { error ->
             if (origin == OverlayRecordingOrigin.ENTRY_HOLD) {
                 Log.e(TAG, "ENTRY_SAVE_FAILED", error)
