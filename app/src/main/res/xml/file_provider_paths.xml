@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 暴露路径配置。
+  只导出 app 私有目录下的 attachments/ 子目录——点开图片时用 content:// 而不是 file://，
+  规避 Android 7+ 的 FileUriExposedException。
+-->
+<paths>
+    <files-path
+        name="attachments"
+        path="attachments/" />
+</paths>

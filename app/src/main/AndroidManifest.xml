@@ -36,6 +36,17 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 系统分享图片到 Ydrop，直接建图片笔记 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <activity
@@ -85,6 +96,18 @@
                 android:name="android.accessibilityservice.AccessibilityService"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- 暴露 app 私有目录里的图片附件给外部应用（系统看图器）查看；
+             必须走 FileProvider，否则 Android 7+ file:// URI 会抛 FileUriExposedException。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths" />
+        </provider>
 
         <receiver
             android:name=".reminder.ReminderReceiver"
