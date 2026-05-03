@@ -102,6 +102,33 @@ class AiOrchestrator(
             prompt = settings.promptSupplement,
             existingTags = existingTags,
             currentTags = note.tags,
+            // 只把有意义的链接预览传给 AI：抓取成功 + 至少有 title 或 summary，
+            // error / 还没抓过的不给模型看，避免产生"预览失败"这类噪声。
+            linkPreviews = note.linkPreviews.filter {
+                it.error == null && (it.title.isNotBlank() || it.summary.isNotBlank())
+            },
+            // 图片上下文：OCR + AI 描述合起来给 LLM，让 "一张截图" 的笔记也能整理出有用的
+            // title/category/提醒候选。keywords 从 aiStructuredJson 里解出来（best effort）。
+            imageContexts = note.attachments.mapNotNull { att ->
+                val keywords = runCatching {
+                    kotlinx.serialization.json.Json.parseToJsonElement(att.aiStructuredJson)
+                        .let { el ->
+                            if (el is kotlinx.serialization.json.JsonObject) {
+                                el["keywords"]?.let { kw ->
+                                    if (kw is kotlinx.serialization.json.JsonArray) {
+                                        kw.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                                    } else emptyList()
+                                } ?: emptyList()
+                            } else emptyList()
+                        }
+                }.getOrDefault(emptyList())
+                if (att.ocrText.isBlank() && att.aiDescription.isBlank() && keywords.isEmpty()) return@mapNotNull null
+                com.ydoc.app.model.ImageContext(
+                    ocrText = att.ocrText,
+                    aiDescription = att.aiDescription,
+                    keywords = keywords,
+                )
+            },
         )
 
         val analysisResult = runCatching { analyzeWithRetry(request, settings) }

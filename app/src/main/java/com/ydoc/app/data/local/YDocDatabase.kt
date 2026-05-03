@@ -14,8 +14,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TombstoneEntity::class,
         AiSuggestionEntity::class,
         ReminderEntryEntity::class,
+        AgentSessionEntity::class,
+        AgentMessageEntity::class,
     ],
-    version = 16,
+    version = 19,
     exportSchema = false,
 )
 abstract class YDocDatabase : RoomDatabase() {
@@ -24,6 +26,7 @@ abstract class YDocDatabase : RoomDatabase() {
     abstract fun tombstoneDao(): TombstoneDao
     abstract fun aiSuggestionDao(): AiSuggestionDao
     abstract fun reminderEntryDao(): ReminderEntryDao
+    abstract fun agentDao(): AgentDao
 
     companion object {
         @Volatile
@@ -171,6 +174,53 @@ abstract class YDocDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE notes ADD COLUMN linkPreviewsJson TEXT")
+            }
+        }
+
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE notes ADD COLUMN attachmentsJson TEXT")
+            }
+        }
+
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_sessions (
+                        id TEXT NOT NULL,
+                        relaySessionId TEXT,
+                        title TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        lastMessagePreview TEXT,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_messages (
+                        id TEXT NOT NULL,
+                        sessionId TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        referencedNoteIdsJson TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        providerError TEXT,
+                        pending INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(id),
+                        FOREIGN KEY(sessionId) REFERENCES agent_sessions(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_agent_messages_sessionId ON agent_messages(sessionId)")
+            }
+        }
+
         fun build(context: Context): YDocDatabase =
             INSTANCE ?: synchronized(lock) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -182,6 +232,7 @@ abstract class YDocDatabase : RoomDatabase() {
                     MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
                     MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
                     MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+                    MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19,
                 ).build().also { INSTANCE = it }
             }
     }

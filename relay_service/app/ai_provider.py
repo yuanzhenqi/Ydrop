@@ -184,3 +184,116 @@ def strip_json_fence(text: str) -> str:
             lines = lines[:-1]
         s = "\n".join(lines).strip()
     return s
+
+
+def call_vision(
+    *,
+    image_bytes: bytes,
+    mime: str,
+    prompt: str,
+    cfg: dict[str, Any],
+    timeout: int = 45,
+) -> str:
+    """把图片交给支持 vision 的模型。返回纯文本内容（一般是 JSON，由调用方自己 strip+parse）。
+
+    兼容 OpenAI vision（chat.completions + image_url data URI）和 Anthropic vision（messages.content
+    里 type=image + base64 source）。AUTO 模式先试 OpenAI 再退到 Anthropic——跟 call_llm 保持一致。
+    """
+    import base64
+
+    mode = (cfg.get("endpoint_mode") or "AUTO").upper()
+    model = cfg.get("vision_model") or cfg.get("model") or "gpt-4o-mini"
+    token = cfg["token"]
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+
+    def _call_openai_vision() -> str:
+        body = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                }
+            ],
+            "temperature": 0.2,
+        }
+        url = _build_url(cfg["base_url"], "/chat/completions")
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            body_text = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else str(e)
+            raise LlmError("OPENAI", f"vision HTTP {e.code}: {body_text}", status=e.code) from e
+        except Exception as e:
+            raise LlmError("OPENAI", f"vision {type(e).__name__}: {e}") from e
+        try:
+            return json.loads(raw)["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise LlmError("OPENAI", f"vision unexpected: {raw[:200]}") from e
+
+    def _call_anthropic_vision() -> str:
+        body = {
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": mime, "data": b64},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        }
+        url = _build_url(cfg["base_url"], "/messages")
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={
+                "x-api-key": token,
+                "Authorization": f"Bearer {token}",
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            body_text = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else str(e)
+            raise LlmError("ANTHROPIC", f"vision HTTP {e.code}: {body_text}", status=e.code) from e
+        except Exception as e:
+            raise LlmError("ANTHROPIC", f"vision {type(e).__name__}: {e}") from e
+        try:
+            j = json.loads(raw)
+            content = j.get("content") or []
+            if isinstance(content, list) and content:
+                texts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                return "\n".join(texts).strip()
+            if "choices" in j:
+                return j["choices"][0]["message"]["content"]
+            raise LlmError("ANTHROPIC", f"vision no content: {raw[:200]}")
+        except Exception as e:
+            raise LlmError("ANTHROPIC", f"vision unexpected: {raw[:200]}") from e
+
+    if mode == "ANTHROPIC":
+        return _call_anthropic_vision()
+    if mode == "OPENAI":
+        return _call_openai_vision()
+    # AUTO
+    try:
+        return _call_openai_vision()
+    except LlmError as e:
+        logger.info("AUTO vision: OpenAI failed (%s), falling back to Anthropic", e)
+        return _call_anthropic_vision()

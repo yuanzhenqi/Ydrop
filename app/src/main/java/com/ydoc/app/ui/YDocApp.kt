@@ -37,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -50,6 +51,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -68,11 +70,24 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.animate
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -87,6 +102,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import com.ydoc.app.appContainer
+import com.ydoc.app.model.NoteAttachment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
@@ -112,6 +134,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ydoc.app.R
 import com.ydoc.app.data.AppContainer
+import com.ydoc.app.ui.components.PulsingDot
 import com.ydoc.app.model.AiSuggestion
 import com.ydoc.app.model.AiSuggestionStatus
 import com.ydoc.app.model.AiEndpointMode
@@ -131,6 +154,8 @@ import com.ydoc.app.model.defaultAiPromptTemplate
 import com.ydoc.app.model.shouldShowPanel
 import com.ydoc.app.ui.components.AudioPlaybackBar
 import com.ydoc.app.ui.components.CompactActionIcon
+import com.ydoc.app.ui.components.LinkPreviewCard
+import com.ydoc.app.ui.components.NoteAttachmentRow
 import com.ydoc.app.ui.components.SegmentedPillGroup
 import com.ydoc.app.ui.components.SettingsSectionHeader
 import com.ydoc.app.ui.components.SettingsToggleRow
@@ -213,13 +238,13 @@ fun YDocApp(
         onOpenSettings = { showSettings = true },
         onCloseSettings = { showSettings = false },
         snackbarHostState = snackbarHostState,
-        onDraftChange = viewModel::updateDraftContent,
-        onDraftCategoryChange = viewModel::updateDraftCategory,
-        onDraftPriorityChange = viewModel::updateDraftPriority,
-        onDraftTagsChange = viewModel::updateDraftTags,
-        onToggleCaptureExpanded = viewModel::toggleCaptureExpanded,
-        onSave = viewModel::saveDraft,
-        onSync = viewModel::syncNow,
+        onOpenNewNoteEditor = viewModel::openNewNoteEditor,
+        onCloseNewNoteEditor = viewModel::closeNewNoteEditor,
+        onSaveNewNote = viewModel::saveNewNote,
+        onStageAddAttachments = viewModel::stageAddAttachments,
+        onStageRemoveAttachment = viewModel::stageRemoveAttachment,
+        onOpenAgentScreen = viewModel::openAgentScreen,
+        onCloseAgentScreen = viewModel::closeAgentScreen,
         onStartRecording = viewModel::startRecording,
         onStopRecording = viewModel::stopRecording,
         onCancelRecording = viewModel::cancelRecording,
@@ -253,6 +278,7 @@ fun YDocApp(
         onPinQuickRecordShortcut = onPinQuickRecordShortcut,
         onShowSection = viewModel::showSection,
         onEditNote = viewModel::startEditing,
+        onChangeNoteCategory = viewModel::changeNoteCategory,
         onArchiveNote = viewModel::archiveNote,
         onUnarchiveNote = viewModel::unarchiveNote,
         onDeleteNote = viewModel::deleteNote,
@@ -267,6 +293,7 @@ fun YDocApp(
         onRunAi = viewModel::runAiForNote,
         onApplyAi = viewModel::applyAiSuggestion,
         onDismissAi = viewModel::dismissAiSuggestion,
+        onRestoreOriginalContent = viewModel::restoreOriginalContent,
         onCreateReminderFromSuggestion = viewModel::createReminderFromSuggestion,
         onAddQuickReminder = viewModel::addQuickReminder,
         onCopyNote = viewModel::copyNoteContent,
@@ -304,13 +331,13 @@ private fun YDocScreen(
     onOpenSettings: () -> Unit,
     onCloseSettings: () -> Unit,
     snackbarHostState: SnackbarHostState,
-    onDraftChange: (String) -> Unit,
-    onDraftCategoryChange: (NoteCategory) -> Unit,
-    onDraftPriorityChange: (NotePriority) -> Unit,
-    onDraftTagsChange: (List<String>) -> Unit,
-    onToggleCaptureExpanded: () -> Unit,
-    onSave: () -> Unit,
-    onSync: () -> Unit,
+    onOpenNewNoteEditor: () -> Unit,
+    onCloseNewNoteEditor: () -> Unit,
+    onSaveNewNote: (String, List<NoteAttachment>) -> Unit,
+    onStageAddAttachments: (List<NoteAttachment>) -> Unit,
+    onStageRemoveAttachment: (String) -> Unit,
+    onOpenAgentScreen: () -> Unit,
+    onCloseAgentScreen: () -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -344,6 +371,7 @@ private fun YDocScreen(
     onPinQuickRecordShortcut: () -> Boolean,
     onShowSection: (NoteListSection) -> Unit,
     onEditNote: (Note) -> Unit,
+    onChangeNoteCategory: (String, NoteCategory) -> Unit,
     onArchiveNote: (String) -> Unit,
     onUnarchiveNote: (String) -> Unit,
     onDeleteNote: (String) -> Unit,
@@ -358,6 +386,7 @@ private fun YDocScreen(
     onRunAi: (String) -> Unit,
     onApplyAi: (String) -> Unit,
     onDismissAi: (String) -> Unit,
+    onRestoreOriginalContent: (String) -> Unit,
     onCreateReminderFromSuggestion: (String, ReminderCandidate) -> Unit,
     onAddQuickReminder: (String, Long) -> Unit,
     onCopyNote: (String) -> Unit,
@@ -385,6 +414,17 @@ private fun YDocScreen(
     onMergeSelected: () -> Unit,
     onAnalyzeSelected: () -> Unit,
 ) {
+    if (state.showNewNoteEditor) {
+        NewNoteEditorScreen(
+            onCancel = onCloseNewNoteEditor,
+            onSave = onSaveNewNote,
+        )
+        return
+    }
+    if (state.showAgentScreen) {
+        com.ydoc.app.ui.agent.AgentScreen(onBack = onCloseAgentScreen)
+        return
+    }
     BackHandler(enabled = state.selectionMode, onBack = onExitSelectionMode)
     val baseNotes = when (state.currentSection) {
         NoteListSection.INBOX -> state.notes
@@ -554,6 +594,8 @@ private fun YDocScreen(
                             onUpdateCategory = onUpdateEditingCategory,
                             onUpdatePriority = onUpdateEditingPriority,
                             onUpdateTags = onUpdateEditingTags,
+                            onAddAttachments = { atts -> onStageAddAttachments(atts) },
+                            onRemoveAttachment = { attId -> onStageRemoveAttachment(attId) },
                             onSave = onSaveEditedNote,
                             onCancel = onCancelEditing,
                         )
@@ -567,7 +609,7 @@ private fun YDocScreen(
                     )
                 }
                 // Tag filter bar
-                if (state.suggestedTags.isNotEmpty() && state.tagFilter.isNotEmpty() || state.suggestedTags.isNotEmpty()) {
+                if (state.suggestedTags.isNotEmpty()) {
                     item {
                         TagFilterBar(
                             suggestedTags = state.suggestedTags,
@@ -641,6 +683,7 @@ private fun YDocScreen(
                                 onToggleAudioPlayback = { onToggleAudioPlayback(note.id) },
                                 onSeekAudio = onSeekAudio,
                                 onEdit = { onEditNote(note) },
+                                onChangeCategory = { cat -> onChangeNoteCategory(note.id, cat) },
                                 onArchive = { onArchiveNote(note.id) },
                                 onUnarchive = { onUnarchiveNote(note.id) },
                                 onDelete = { onDeleteNote(note.id) },
@@ -650,6 +693,7 @@ private fun YDocScreen(
                                 onRunAi = { onRunAi(note.id) },
                                 onApplyAi = { onApplyAi(note.id) },
                                 onDismissAi = { onDismissAi(note.id) },
+                                onRestoreOriginalContent = { onRestoreOriginalContent(note.id) },
                                 onCreateReminderFromSuggestion = { candidate -> onCreateReminderFromSuggestion(note.id, candidate) },
                                 onAddQuickReminder = onAddQuickReminder,
                                 onCopy = { onCopyNote(note.id) },
@@ -727,29 +771,31 @@ private fun YDocScreen(
                         .fillMaxWidth(),
                 )
             } else if (!showSettings) {
-                HeroCaptureCard(
-                    draft = state.draft,
-                    captureExpanded = state.captureExpanded,
-                    isSaving = state.isSaving,
-                    isSyncing = state.isSyncing,
-                    syncHint = state.syncHint,
+                QuickCaptureBar(
                     recording = state.recording,
-                    suggestedTags = state.suggestedTags,
-                    onDraftChange = onDraftChange,
-                    onDraftCategoryChange = onDraftCategoryChange,
-                    onDraftPriorityChange = onDraftPriorityChange,
-                    onDraftTagsChange = onDraftTagsChange,
-                    onToggleExpanded = onToggleCaptureExpanded,
-                    onSave = onSave,
-                    onSync = onSync,
                     onStartRecording = onStartRecording,
                     onStopRecording = onStopRecording,
                     onCancelRecording = onCancelRecording,
+                    onOpenTextEditor = onOpenNewNoteEditor,
+                    onPickImages = { atts -> onSaveNewNote("", atts) },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                         .fillMaxWidth(),
                 )
+                if (state.recording.state == RecordingState.IDLE) {
+                    FloatingActionButton(
+                        onClick = onOpenAgentScreen,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 20.dp, bottom = 108.dp),
+                        shape = CircleShape,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ) {
+                        Icon(Icons.Rounded.AutoAwesome, contentDescription = "打开助手")
+                    }
+                }
             }
         }
     }
@@ -765,204 +811,399 @@ private fun YDocScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+// 极简采集条：IDLE 并排「按住说话」+「写一个（右上叠加图）」；按住 500ms 后启动录音，松开保存，上滑 80dp 取消。
 @Composable
-private fun HeroCaptureCard(
-    modifier: Modifier = Modifier,
-    draft: CaptureDraft,
-    captureExpanded: Boolean,
-    isSaving: Boolean,
-    isSyncing: Boolean,
-    syncHint: String,
+private fun QuickCaptureBar(
     recording: RecordingUiState,
-    suggestedTags: List<String>,
-    onDraftChange: (String) -> Unit,
-    onDraftCategoryChange: (NoteCategory) -> Unit,
-    onDraftPriorityChange: (NotePriority) -> Unit,
-    onDraftTagsChange: (List<String>) -> Unit,
-    onToggleExpanded: () -> Unit,
-    onSave: () -> Unit,
-    onSync: () -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onCancelRecording: () -> Unit,
+    onOpenTextEditor: () -> Unit,
+    onPickImages: (List<NoteAttachment>) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    // SAVING 不保持展开：用户按停止后立刻回 inbox，保存/转写/AI 整理全后台跑
-    val effectiveExpanded = captureExpanded ||
-        draft.content.isNotBlank() ||
-        recording.state == RecordingState.RECORDING ||
-        recording.state == RecordingState.STARTING
-    val previewText = draft.content.ifBlank { "记点什么…" }
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 18.dp, vertical = 16.dp)
-                .animateContentSize(animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing)),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable {
-                            if (!effectiveExpanded) {
-                                onToggleExpanded()
-                            }
-                        },
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text("快速记录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        previewText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                CompactActionIcon(
-                    icon = painterResource(id = android.R.drawable.ic_btn_speak_now),
-                    contentDescription = when (recording.state) {
-                        RecordingState.IDLE -> "开始录音"
-                        RecordingState.STARTING -> "正在准备录音"
-                        RecordingState.RECORDING -> "停止录音"
-                        RecordingState.SAVING -> "正在保存录音"
-                    },
-                    enabled = recording.state == RecordingState.IDLE || recording.state == RecordingState.RECORDING,
-                    containerColor = when (recording.state) {
-                        RecordingState.RECORDING -> MaterialTheme.colorScheme.errorContainer
-                        RecordingState.STARTING -> MaterialTheme.colorScheme.tertiaryContainer
-                        else -> MaterialTheme.colorScheme.secondaryContainer
-                    },
-                    iconTint = when (recording.state) {
-                        RecordingState.RECORDING -> MaterialTheme.colorScheme.onErrorContainer
-                        RecordingState.STARTING -> MaterialTheme.colorScheme.onTertiaryContainer
-                        else -> MaterialTheme.colorScheme.onSecondaryContainer
-                    },
-                    onClick = {
-                        when (recording.state) {
-                            RecordingState.IDLE -> onStartRecording()
-                            RecordingState.STARTING -> Unit
-                            RecordingState.RECORDING -> onStopRecording()
-                            RecordingState.SAVING -> Unit
-                        }
-                    },
-                )
-                CompactActionIcon(
-                    icon = painterResource(id = android.R.drawable.ic_menu_save),
-                    contentDescription = "保存记录",
-                    enabled = !isSaving,
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    iconTint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    onClick = onSave,
-                )
-                CompactActionIcon(
-                    icon = painterResource(
-                        id = if (effectiveExpanded) android.R.drawable.arrow_up_float else android.R.drawable.arrow_down_float,
-                    ),
-                    contentDescription = if (effectiveExpanded) "收起输入区" else "展开输入区",
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    onClick = onToggleExpanded,
-                )
-            }
+    val isIdle = recording.state == RecordingState.IDLE
+    var cancelPending by remember { mutableStateOf(false) }
 
-            AnimatedVisibility(
-                visible = effectiveExpanded,
-                enter = expandVertically(animationSpec = tween(150, easing = FastOutSlowInEasing)) + fadeIn(tween(100)),
-                exit = shrinkVertically(animationSpec = tween(150, easing = FastOutSlowInEasing)) + fadeOut(tween(80)),
+    val captureContext = LocalContext.current
+    val captureScope = rememberCoroutineScope()
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        captureScope.launch {
+            val added = withContext(Dispatchers.IO) {
+                val store = captureContext.appContainer.attachmentStore
+                uris.mapNotNull { uri -> runCatching { store.import(uri) }.getOrNull() }
+            }
+            if (added.isNotEmpty()) onPickImages(added)
+        }
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.5.dp,
+        shadowElevation = 2.dp,
+    ) {
+        // HoldToRecordSurface 必须在 recording 状态切换时保持 composition 身份稳定，
+        // 否则 pointerInput 协程会被 cancel，用户松手的 up 事件就收不到了（录音停不下来）。
+        Row(
+            modifier = Modifier
+                .padding(12.dp)
+                .animateContentSize(animationSpec = tween(150, easing = FastOutSlowInEasing))
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            HoldToRecordSurface(
+                recordingState = recording.state,
+                onStart = onStartRecording,
+                onRelease = { canceled ->
+                    if (canceled) onCancelRecording() else onStopRecording()
+                },
+                onCancelPendingChange = { cancelPending = it },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(72.dp),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (recording.state != RecordingState.IDLE) {
-                        RecordingStrip(recording, onStartRecording, onStopRecording, onCancelRecording)
+                if (isIdle) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(id = android.R.drawable.ic_btn_speak_now),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(26.dp),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "按住说话",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    OutlinedTextField(
-                        value = draft.content,
-                        onValueChange = onDraftChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("输入内容") },
-                        placeholder = { Text("点击补一句，或直接用语音记下来") },
-                        minLines = 2,
-                        maxLines = 4,
-                    )
-                    Text("类型", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    SegmentedPillGroup(
-                        options = NoteCategory.entries.toList(),
-                        selected = draft.category,
-                        onSelect = onDraftCategoryChange,
-                        label = { it.toChinese() },
-                    )
-                    Text("优先级", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    SegmentedPillGroup(
-                        options = NotePriority.entries.toList(),
-                        selected = draft.priority,
-                        onSelect = onDraftPriorityChange,
-                        label = { it.toChinese() },
-                    )
-                    var tagInput by remember(draft.tags) { mutableStateOf(draft.tags.joinToString(", ")) }
-                    Text("标签", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    OutlinedTextField(
-                        value = tagInput,
-                        onValueChange = { value ->
-                            tagInput = value
-                            onDraftTagsChange(value.split(",").map { it.trim() }.filter { it.isNotBlank() })
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text("逗号分隔，如：工作, 日程, 重要") },
-                    )
-                    // Tag suggestion chips
-                    val availableSuggestions = suggestedTags.filter { it !in draft.tags }
-                    if (availableSuggestions.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            availableSuggestions.take(6).forEach { tag ->
-                                FilterChip(
-                                    selected = false,
-                                    onClick = {
-                                        val newTags = draft.tags + tag
-                                        tagInput = newTags.joinToString(", ")
-                                        onDraftTagsChange(newTags)
-                                    },
-                                    label = { Text("#$tag", style = MaterialTheme.typography.labelSmall) },
-                                )
-                            }
-                        }
-                    }
+                } else {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            syncHint,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                        PulsingDot(
+                            color = if (cancelPending) MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                            else MaterialTheme.colorScheme.error,
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (recording.state != RecordingState.IDLE) {
-                                AssistChip(onClick = onCancelRecording, label = { Text("取消") })
-                            }
-                            AssistChip(
-                                onClick = onSync,
-                                label = { Text(if (isSyncing) "同步中" else "立即同步") },
+                        Spacer(Modifier.width(10.dp))
+                        val mm = recording.elapsedSeconds / 60
+                        val ss = recording.elapsedSeconds % 60
+                        Text(
+                            text = when (recording.state) {
+                                RecordingState.STARTING -> "准备录音…"
+                                RecordingState.RECORDING -> "%02d:%02d".format(mm, ss)
+                                RecordingState.SAVING -> "保存中…"
+                                RecordingState.IDLE -> ""
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (cancelPending) "松开取消" else "↑ 上滑取消",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (cancelPending) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (isIdle) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(72.dp),
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(onClick = onOpenTextEditor),
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(
+                                painter = painterResource(id = android.R.drawable.ic_menu_edit),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(26.dp),
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "写一个",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                    }
+                    // 右上角快捷加图按钮：不占独立 weight 列，保留原两栏布局。
+                    // 点小图标 → PhotoPicker；点容器其余位置 → 进 NewNoteEditor。
+                    IconButton(
+                        onClick = {
+                            picker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(2.dp)
+                            .size(32.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(id = android.R.drawable.ic_menu_gallery),
+                            contentDescription = "加图",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * 按住 [holdThresholdMs] 后才触发 [onStart]；期间手指向上滑动超过 [cancelSlideDp]
+ * 进入取消预备态，抬手按预备态 canceled 调用 [onRelease]。
+ * 500ms 内抬手：无事发生（防止轻点误触）。
+ */
+@Composable
+private fun HoldToRecordSurface(
+    recordingState: RecordingState,
+    onStart: () -> Unit,
+    onRelease: (canceled: Boolean) -> Unit,
+    onCancelPendingChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    holdThresholdMs: Long = 500L,
+    cancelSlideDp: androidx.compose.ui.unit.Dp = 80.dp,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val cancelPx = with(density) { cancelSlideDp.toPx() }
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val currentOnStart by rememberUpdatedState(onStart)
+    val currentOnRelease by rememberUpdatedState(onRelease)
+    val currentOnCancelPending by rememberUpdatedState(onCancelPendingChange)
+    val currentRecordingState by rememberUpdatedState(recordingState)
+
+    Surface(
+        modifier = modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                down.consume()
+                var triggered = false
+                var permissionBlocked = false
+                var lastCancelFlag = false
+                val startJob = scope.launch {
+                    try {
+                        kotlinx.coroutines.delay(holdThresholdMs)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        currentOnStart()
+                        triggered = true
+                        kotlinx.coroutines.delay(300L)
+                        if (currentRecordingState == RecordingState.IDLE) {
+                            permissionBlocked = true
+                        }
+                    } catch (_: kotlinx.coroutines.CancellationException) {
+                        // swallowed
+                    }
+                }
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        change.consume()
+                        val dy = change.position.y - down.position.y
+                        if (triggered && !permissionBlocked) {
+                            val next = dy < -cancelPx
+                            if (next != lastCancelFlag) {
+                                lastCancelFlag = next
+                                currentOnCancelPending(next)
+                            }
+                        }
+                    }
+                } finally {
+                    startJob.cancel()
+                    if (triggered && !permissionBlocked) {
+                        currentOnRelease(lastCancelFlag)
+                    }
+                    currentOnCancelPending(false)
+                }
+            }
+        },
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        content()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewNoteEditorScreen(
+    onCancel: () -> Unit,
+    onSave: (String, List<NoteAttachment>) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var content by rememberSaveable { mutableStateOf("") }
+    // pending 是保存前暂存在本地磁盘上的附件——已经 import 过（拷到 app 私有目录），但还没挂到任何笔记上。
+    // 放弃编辑时要从磁盘删掉，不然每次放弃都会留一堆孤儿文件。
+    var pendingAttachments by remember { mutableStateOf<List<NoteAttachment>>(emptyList()) }
+    var showDiscardConfirm by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    val pickImages = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            val added = withContext(Dispatchers.IO) {
+                val store = context.appContainer.attachmentStore
+                uris.mapNotNull { uri -> runCatching { store.import(uri) }.getOrNull() }
+            }
+            if (added.isNotEmpty()) {
+                pendingAttachments = pendingAttachments + added
+            }
+        }
+    }
+
+    val attemptCancel: () -> Unit = {
+        if (content.isNotBlank() || pendingAttachments.isNotEmpty()) {
+            showDiscardConfirm = true
+        } else {
+            onCancel()
+        }
+    }
+
+    BackHandler { attemptCancel() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+        keyboard?.show()
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                CenterAlignedTopAppBar(
+                    title = { },
+                    navigationIcon = {
+                        IconButton(onClick = attemptCancel) {
+                            Icon(Icons.Rounded.Close, contentDescription = "关闭")
+                        }
+                    },
+                    actions = {
+                        IconButton(
+                            onClick = {
+                                pickImages.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            },
+                        ) {
+                            Icon(
+                                painter = painterResource(id = android.R.drawable.ic_menu_gallery),
+                                contentDescription = "加图",
+                            )
+                        }
+                        Button(
+                            onClick = { onSave(content, pendingAttachments) },
+                            enabled = content.isNotBlank() || pendingAttachments.isNotEmpty(),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.padding(end = 8.dp),
+                        ) {
+                            Text("保存", fontWeight = FontWeight.SemiBold)
+                        }
+                    },
+                )
+            },
+        ) { inner ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(inner)
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (pendingAttachments.isNotEmpty()) {
+                    com.ydoc.app.ui.components.NoteAttachmentRow(
+                        attachments = pendingAttachments,
+                        onOpen = { /* 新建态不展开预览 */ },
+                        onRemove = { att ->
+                            pendingAttachments = pendingAttachments.filterNot { it.id == att.id }
+                            context.appContainer.attachmentStore.delete(att)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    if (content.isEmpty()) {
+                        Text(
+                            "想到什么就记下来…",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        )
+                    }
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = content,
+                        onValueChange = { content = it },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .focusRequester(focusRequester),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+        }
+    }
+
+    if (showDiscardConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirm = false },
+            title = { Text("放弃这条记录？") },
+            text = { Text("输入的内容" + (if (pendingAttachments.isNotEmpty()) "和加的图" else "") + "将被丢弃，无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDiscardConfirm = false
+                    // 清掉磁盘上的 pending 附件，避免孤儿文件
+                    pendingAttachments.forEach { context.appContainer.attachmentStore.delete(it) }
+                    pendingAttachments = emptyList()
+                    onCancel()
+                }) { Text("放弃") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirm = false }) { Text("继续编辑") }
+            },
+        )
     }
 }
 
@@ -975,9 +1216,25 @@ private fun EditNoteCard(
     onUpdateCategory: (NoteCategory) -> Unit,
     onUpdatePriority: (NotePriority) -> Unit,
     onUpdateTags: (List<String>) -> Unit,
+    onAddAttachments: (List<NoteAttachment>) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    val editContext = LocalContext.current
+    val editScope = rememberCoroutineScope()
+    val pickEditImages = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        editScope.launch {
+            val added = withContext(Dispatchers.IO) {
+                val store = editContext.appContainer.attachmentStore
+                uris.mapNotNull { uri -> runCatching { store.import(uri) }.getOrNull() }
+            }
+            if (added.isNotEmpty()) onAddAttachments(added)
+        }
+    }
     var tagInput by remember(editing.noteId) { mutableStateOf(editing.tags.joinToString(", ")) }
     Card(
         shape = RoundedCornerShape(28.dp),
@@ -987,6 +1244,25 @@ private fun EditNoteCard(
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("编辑记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             OutlinedTextField(value = editing.content, onValueChange = onUpdateContent, modifier = Modifier.fillMaxWidth(), minLines = 4, label = { Text("内容") })
+            // 附件区：显示 effectiveAttachments（= 快照 - 待删 + 新加）。
+            // 用户点 + 只 stage 不落库，点 × 只标删不动盘；保存时才 commit，取消回滚。
+            val effective = editing.effectiveAttachments
+            if (effective.isNotEmpty()) {
+                com.ydoc.app.ui.components.NoteAttachmentRow(
+                    attachments = effective,
+                    onOpen = { /* 编辑态里不展开预览，避免和取消意图混淆 */ },
+                    onRemove = { att -> onRemoveAttachment(att.id) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            AssistChip(
+                onClick = {
+                    pickEditImages.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                label = { Text(if (effective.isEmpty()) "+ 加图" else "+ 再加一张") },
+            )
             Text("类型", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             SegmentedPillGroup(
                 options = NoteCategory.entries.toList(),
@@ -1031,54 +1307,6 @@ private fun EditNoteCard(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onSave) { Text("保存修改") }
                 AssistChip(onClick = onCancel, label = { Text("取消") })
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecordingStrip(
-    recording: RecordingUiState,
-    onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit,
-    onCancelRecording: () -> Unit,
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)),
-        shape = RoundedCornerShape(22.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.Start,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(12.dp)
-                    .background(
-                        color = when (recording.state) {
-                            RecordingState.IDLE -> MaterialTheme.colorScheme.secondary
-                            RecordingState.STARTING -> MaterialTheme.colorScheme.tertiary
-                            RecordingState.RECORDING -> MaterialTheme.colorScheme.error
-                            RecordingState.SAVING -> MaterialTheme.colorScheme.tertiary
-                        },
-                        shape = RoundedCornerShape(999.dp),
-                    ),
-            )
-            Spacer(modifier = Modifier.size(12.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("语音入口", fontWeight = FontWeight.SemiBold)
-                Text(
-                    when (recording.state) {
-                        RecordingState.IDLE -> "点击开始录音，系统会用前台服务保持录音稳定。"
-                        RecordingState.STARTING -> "正在准备录音，会在启动完成后自动开始计时。"
-                        RecordingState.RECORDING -> "录音中 ${recording.elapsedSeconds}s"
-                        RecordingState.SAVING -> "正在保存录音，并尝试上传中转与提交豆包转写..."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -2391,7 +2619,9 @@ private fun TagFilterBar(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+// 主轴锁定的滑动卡片：累积位移 > touchSlop 后判定轴向。
+// |dy| > |dx| * 1.2 判为纵向 → 事件不消费，LazyColumn 接管滚动；
+// 否则判为横向 → 消费事件驱动 offsetX，松手按 45% 阈值触发归档 / 删除。
 @Composable
 private fun SwipeableNoteCard(
     section: NoteListSection,
@@ -2399,54 +2629,108 @@ private fun SwipeableNoteCard(
     onSwipeLeft: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    // 阈值 45%：需要明确的横向滑动意图才触发，避免垂直滚动误触
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> { onSwipeRight(); true }
-                SwipeToDismissBoxValue.EndToStart -> { onSwipeLeft(); true }
-                SwipeToDismissBoxValue.Settled -> false
-            }
-        },
-        positionalThreshold = { it * 0.45f },
-    )
-    SwipeToDismissBox(
-        state = dismissState,
-        backgroundContent = {
-            val direction = dismissState.dismissDirection
-            // 进度渐变：前 15% 几乎不可见，避免轻触即闪色；45% 达到完全显色
-            val progress = dismissState.progress
-            val alpha = ((progress - 0.15f) / 0.30f).coerceIn(0f, 1f)
-            val baseColor = when (direction) {
-                SwipeToDismissBoxValue.StartToEnd -> Color(0xFF2E7D61)
-                SwipeToDismissBoxValue.EndToStart -> Color(0xFFC44545)
-                else -> Color.Transparent
-            }
-            val color = baseColor.copy(alpha = alpha)
-            val label = when {
-                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.INBOX -> "归档"
-                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.ARCHIVE -> "取消归档"
-                direction == SwipeToDismissBoxValue.StartToEnd && section == NoteListSection.TRASH -> "恢复"
-                direction == SwipeToDismissBoxValue.EndToStart && section == NoteListSection.TRASH -> "彻底删除"
-                direction == SwipeToDismissBoxValue.EndToStart -> "删除"
-                else -> ""
-            }
-            val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(color, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 24.dp),
-                contentAlignment = alignment,
-            ) {
-                if (label.isNotEmpty() && alpha > 0.3f) {
-                    Text(label, color = Color.White.copy(alpha = alpha), fontWeight = FontWeight.SemiBold)
+    val density = LocalDensity.current
+    val touchSlopPx = with(density) { 8.dp.toPx() }
+    val dismissThresholdFraction = 0.45f
+    val verticalBias = 1.2f
+    val scope = rememberCoroutineScope()
+    val currentOnSwipeRight by rememberUpdatedState(onSwipeRight)
+    val currentOnSwipeLeft by rememberUpdatedState(onSwipeLeft)
+
+    var width by remember { mutableIntStateOf(0) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { width = it.width }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var axis = SwipeAxis.UNDECIDED
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            if (axis == SwipeAxis.HORIZONTAL) {
+                                val w = width.coerceAtLeast(1)
+                                val fraction = offsetX / w
+                                val start = offsetX
+                                scope.launch {
+                                    when {
+                                        fraction > dismissThresholdFraction -> {
+                                            animate(initialValue = start, targetValue = w.toFloat()) { v, _ -> offsetX = v }
+                                            currentOnSwipeRight()
+                                            offsetX = 0f
+                                        }
+                                        fraction < -dismissThresholdFraction -> {
+                                            animate(initialValue = start, targetValue = -w.toFloat()) { v, _ -> offsetX = v }
+                                            currentOnSwipeLeft()
+                                            offsetX = 0f
+                                        }
+                                        else -> {
+                                            animate(initialValue = start, targetValue = 0f) { v, _ -> offsetX = v }
+                                        }
+                                    }
+                                }
+                            }
+                            break
+                        }
+                        val dx = change.positionChange().x
+                        val dy = change.positionChange().y
+                        totalDx += dx
+                        totalDy += dy
+                        if (axis == SwipeAxis.UNDECIDED) {
+                            val total = kotlin.math.hypot(totalDx.toDouble(), totalDy.toDouble()).toFloat()
+                            if (total >= touchSlopPx) {
+                                axis = if (kotlin.math.abs(totalDy) > kotlin.math.abs(totalDx) * verticalBias) {
+                                    SwipeAxis.VERTICAL
+                                } else {
+                                    SwipeAxis.HORIZONTAL
+                                }
+                            }
+                        }
+                        if (axis == SwipeAxis.HORIZONTAL) {
+                            change.consume()
+                            offsetX += dx
+                        }
+                    }
                 }
+            },
+    ) {
+        val widthPx = width.coerceAtLeast(1)
+        val progress = (offsetX / widthPx).coerceIn(-1f, 1f)
+        val absProgress = kotlin.math.abs(progress)
+        val alpha = ((absProgress - 0.15f) / 0.30f).coerceIn(0f, 1f)
+        val goingRight = progress > 0
+        val baseColor = if (goingRight) Color(0xFF2E7D61) else Color(0xFFC44545)
+        val label = when {
+            goingRight && section == NoteListSection.INBOX -> "归档"
+            goingRight && section == NoteListSection.ARCHIVE -> "取消归档"
+            goingRight && section == NoteListSection.TRASH -> "恢复"
+            !goingRight && section == NoteListSection.TRASH -> "彻底删除"
+            !goingRight -> "删除"
+            else -> ""
+        }
+        val alignment = if (goingRight) Alignment.CenterStart else Alignment.CenterEnd
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(baseColor.copy(alpha = alpha), RoundedCornerShape(18.dp))
+                .padding(horizontal = 24.dp),
+            contentAlignment = alignment,
+        ) {
+            if (label.isNotEmpty() && alpha > 0.3f) {
+                Text(label, color = Color.White.copy(alpha = alpha), fontWeight = FontWeight.SemiBold)
             }
-        },
-        content = { content() },
-    )
+        }
+        Box(Modifier.graphicsLayer { translationX = offsetX }) { content() }
+    }
 }
+
+private enum class SwipeAxis { UNDECIDED, HORIZONTAL, VERTICAL }
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
@@ -2459,6 +2743,7 @@ private fun NoteCardV2(
     onToggleAudioPlayback: () -> Unit,
     onSeekAudio: (Long) -> Unit,
     onEdit: () -> Unit,
+    onChangeCategory: (NoteCategory) -> Unit,
     onArchive: () -> Unit,
     onUnarchive: () -> Unit,
     onDelete: () -> Unit,
@@ -2468,6 +2753,7 @@ private fun NoteCardV2(
     onRunAi: () -> Unit,
     onApplyAi: () -> Unit,
     onDismissAi: () -> Unit,
+    onRestoreOriginalContent: () -> Unit = {},
     onCreateReminderFromSuggestion: (ReminderCandidate) -> Unit,
     onAddQuickReminder: (String, Long) -> Unit,
     onCopy: () -> Unit,
@@ -2478,7 +2764,9 @@ private fun NoteCardV2(
     val accent = note.colorToken.toColor()
     var expanded by remember(note.id) { mutableStateOf(false) }
     var showOriginalContent by remember(note.id, note.originalContent) { mutableStateOf(false) }
+    var showRestoreDialog by remember(note.id) { mutableStateOf(false) }
     var reminderMenuExpanded by remember(note.id) { mutableStateOf(false) }
+    var previewAttachment by remember(note.id) { mutableStateOf<NoteAttachment?>(null) }
     val isVoiceNote = note.source == NoteSource.VOICE
     val isPlayingThisNote = audioPlayback.currentNoteId == note.id &&
         (audioPlayback.isPlaying || audioPlayback.isBuffering || audioPlayback.positionMs > 0)
@@ -2562,7 +2850,43 @@ private fun NoteCardV2(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StatusPill(label = note.category.toChinese(), color = accent.copy(alpha = 0.18f))
+                // category pill 可点开下拉菜单直接切类型——主界面省一次"进编辑卡改类型再保存"。
+                // 多选模式下不弹菜单，让 tap 事件继续透给外层 wrapper 处理选中态。
+                var categoryMenuOpen by remember(note.id) { mutableStateOf(false) }
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = accent.copy(alpha = 0.18f),
+                        modifier = Modifier.clickable(enabled = !selectionMode) {
+                            categoryMenuOpen = true
+                        },
+                    ) {
+                        Text(
+                            text = note.category.toChinese(),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = categoryMenuOpen,
+                        onDismissRequest = { categoryMenuOpen = false },
+                    ) {
+                        NoteCategory.entries.forEach { cat ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        cat.toChinese() + if (cat == note.category) "（当前）" else "",
+                                        fontWeight = if (cat == note.category) FontWeight.SemiBold else FontWeight.Normal,
+                                    )
+                                },
+                                onClick = {
+                                    categoryMenuOpen = false
+                                    if (cat != note.category) onChangeCategory(cat)
+                                },
+                            )
+                        }
+                    }
+                }
                 StatusPill(label = note.priority.toChinese(), color = MaterialTheme.colorScheme.secondaryContainer)
                 if (isVoiceNote) StatusPill(label = "语音", color = MaterialTheme.colorScheme.primaryContainer)
                 if (note.tags.isNotEmpty()) {
@@ -2608,14 +2932,59 @@ private fun NoteCardV2(
                     }
                 }
 
-                // Original content toggle
-                originalContent?.let { hiddenContent ->
-                    Text(
-                        if (showOriginalContent) "隐藏原内容" else "查看原内容",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { showOriginalContent = !showOriginalContent },
+                // ── 图片附件 ──
+                // 展开态显示横滚缩略图；点缩略图弹 App 内全屏 Dialog 预览；"i" 按钮展开 OCR/AI 描述面板。
+                // 不用 ACTION_VIEW 跳外部看图器——用户经常碰到"浏览器接走加载 hang"或"没 app 接住静默失败"。
+                if (note.attachments.isNotEmpty()) {
+                    NoteAttachmentRow(
+                        attachments = note.attachments,
+                        onOpen = { att -> previewAttachment = att },
+                        onRemove = null,  // 展开态是查看态；编辑态在编辑对话框里处理删除
                     )
+                }
+
+                // ── 链接预览卡片 ──
+                // 展开态才显示，避免收起态卡片突然变高。error 态也渲染（保留 chip 样式）。
+                if (note.linkPreviews.isNotEmpty()) {
+                    val linkContext = LocalContext.current
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        note.linkPreviews.forEach { preview ->
+                            LinkPreviewCard(
+                                preview = preview,
+                                onClick = {
+                                    runCatching {
+                                        linkContext.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(preview.url),
+                                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // Original content toggle + restore action
+                originalContent?.let { hiddenContent ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (showOriginalContent) "隐藏原内容" else "查看原内容",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { showOriginalContent = !showOriginalContent },
+                        )
+                        Text(
+                            "还原为原内容",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.clickable { showRestoreDialog = true },
+                        )
+                    }
                     AnimatedVisibility(
                         visible = showOriginalContent,
                         enter = fadeIn() + expandVertically(),
@@ -2635,6 +3004,24 @@ private fun NoteCardV2(
                                 Text(hiddenContent, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
+                    }
+                    if (showRestoreDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showRestoreDialog = false },
+                            title = { Text("还原为原内容？") },
+                            text = {
+                                Text("当前 AI 整理后的正文会被原内容覆盖；标题、分类、优先级、标签保留不变。还原后无法撤销。")
+                            },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showRestoreDialog = false
+                                    onRestoreOriginalContent()
+                                }) { Text("还原") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showRestoreDialog = false }) { Text("取消") }
+                            },
+                        )
                     }
                 }
 
@@ -2804,6 +3191,15 @@ private fun NoteCardV2(
                 }
             }
         }
+    }
+
+    // 附件全屏预览 Dialog：点缩略图时 previewAttachment 非空，弹出。
+    // 放在 Card 外保证 Dialog 的 scrim 盖整屏而不是卡片范围。
+    previewAttachment?.let { att ->
+        com.ydoc.app.ui.components.FullImagePreviewDialog(
+            attachment = att,
+            onDismiss = { previewAttachment = null },
+        )
     }
 }
 

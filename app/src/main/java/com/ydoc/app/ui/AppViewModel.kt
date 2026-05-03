@@ -48,20 +48,23 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 
-data class CaptureDraft(
-    val content: String = "",
-    val category: NoteCategory = NoteCategory.NOTE,
-    val priority: NotePriority = NotePriority.MEDIUM,
-    val tags: List<String> = emptyList(),
-)
-
 data class EditDraft(
     val noteId: String,
     val content: String,
     val category: NoteCategory,
     val priority: NotePriority,
     val tags: List<String> = emptyList(),
-)
+    /** 编辑开始时笔记的附件快照——**进入编辑态后就不跟随 observeActiveNotes 刷新**，保证取消能回滚。 */
+    val attachments: List<com.ydoc.app.model.NoteAttachment> = emptyList(),
+    /** 本次编辑里用户点 "+ 加图" 新加的，但**还没落库**。取消时直接清盘；保存时才真正落库 + 排 Worker。 */
+    val pendingAddedAttachments: List<com.ydoc.app.model.NoteAttachment> = emptyList(),
+    /** 本次编辑里用户 × 掉的**已有**附件 id 集合；保存时才真删，取消时作废。 */
+    val pendingRemovedAttachmentIds: Set<String> = emptySet(),
+) {
+    /** UI 展示的"当前附件列表" = 快照去掉待删 + 加上待增。 */
+    val effectiveAttachments: List<com.ydoc.app.model.NoteAttachment>
+        get() = attachments.filterNot { it.id in pendingRemovedAttachmentIds } + pendingAddedAttachments
+}
 
 enum class NoteListSection {
     INBOX,
@@ -71,8 +74,8 @@ enum class NoteListSection {
 }
 
 data class AppUiState(
-    val draft: CaptureDraft = CaptureDraft(),
-    val captureExpanded: Boolean = false,
+    val showNewNoteEditor: Boolean = false,
+    val showAgentScreen: Boolean = false,
     val notes: List<Note> = emptyList(),
     val archivedNotes: List<Note> = emptyList(),
     val trashedNotes: List<Note> = emptyList(),
@@ -137,6 +140,9 @@ class AppViewModel(
                         .sortedByDescending { it.value }
                         .take(8)
                         .map { it.key }
+                    // 编辑态下**不**覆盖 draft.attachments——进入编辑后用户的加图/删图操作都是 staged，
+                    // 如果这里强行同步 db 最新，会让用户刚 stage 的 pending 被 observe 覆盖掉，造成 UI 闪烁甚至丢状态。
+                    // draft.attachments 作为"编辑开始时的快照"保留到保存/取消为止。
                     _uiState.value = _uiState.value.copy(notes = notes, suggestedTags = suggested)
                 }
             }
@@ -203,11 +209,10 @@ class AppViewModel(
         }
     }
 
-    fun updateDraftContent(value: String) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(content = value)) }
-    fun updateDraftCategory(value: NoteCategory) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(category = value)) }
-    fun updateDraftPriority(value: NotePriority) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(priority = value)) }
-    fun updateDraftTags(value: List<String>) { _uiState.value = _uiState.value.copy(draft = _uiState.value.draft.copy(tags = value)) }
-    fun toggleCaptureExpanded() { _uiState.value = _uiState.value.copy(captureExpanded = !_uiState.value.captureExpanded) }
+    fun openNewNoteEditor() { _uiState.value = _uiState.value.copy(showNewNoteEditor = true) }
+    fun closeNewNoteEditor() { _uiState.value = _uiState.value.copy(showNewNoteEditor = false) }
+    fun openAgentScreen() { _uiState.value = _uiState.value.copy(showAgentScreen = true) }
+    fun closeAgentScreen() { _uiState.value = _uiState.value.copy(showAgentScreen = false) }
 
     fun toggleTagFilter(tag: String) {
         val current = _uiState.value.tagFilter
@@ -221,7 +226,16 @@ class AppViewModel(
     fun clearSearch() { _uiState.value = _uiState.value.copy(searchQuery = "") }
 
     fun startEditing(note: Note) {
-        _uiState.value = _uiState.value.copy(editingNote = EditDraft(note.id, note.content, note.category, note.priority, note.tags))
+        _uiState.value = _uiState.value.copy(
+            editingNote = EditDraft(
+                noteId = note.id,
+                content = note.content,
+                category = note.category,
+                priority = note.priority,
+                tags = note.tags,
+                attachments = note.attachments,
+            ),
+        )
     }
 
     fun startEditingById(noteId: String) {
@@ -237,7 +251,14 @@ class AppViewModel(
                     note.isArchived -> NoteListSection.ARCHIVE
                     else -> NoteListSection.INBOX
                 },
-                editingNote = EditDraft(note.id, note.content, note.category, note.priority, note.tags),
+                editingNote = EditDraft(
+                    noteId = note.id,
+                    content = note.content,
+                    category = note.category,
+                    priority = note.priority,
+                    tags = note.tags,
+                    attachments = note.attachments,
+                ),
             )
         }
     }
@@ -246,7 +267,18 @@ class AppViewModel(
     fun updateEditingCategory(value: NoteCategory) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(category = value)) }
     fun updateEditingPriority(value: NotePriority) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(priority = value)) }
     fun updateEditingTags(value: List<String>) { _uiState.value = _uiState.value.copy(editingNote = _uiState.value.editingNote?.copy(tags = value)) }
-    fun cancelEditing() { _uiState.value = _uiState.value.copy(editingNote = null) }
+    fun cancelEditing() {
+        val draft = _uiState.value.editingNote
+        // 放弃编辑时，pendingAdded 的附件已经被 AttachmentStore.import 落盘，要手动清理避免孤儿文件。
+        // pendingRemoved 里的 id 作废就行——对应文件还在本地，note.attachments 没动。
+        if (draft != null && draft.pendingAddedAttachments.isNotEmpty()) {
+            val toDelete = draft.pendingAddedAttachments
+            viewModelScope.launch(Dispatchers.IO) {
+                toDelete.forEach { container.attachmentStore.delete(it) }
+            }
+        }
+        _uiState.value = _uiState.value.copy(editingNote = null)
+    }
     fun clearMessage() { _uiState.value = _uiState.value.copy(message = null) }
     fun dismissMicrophonePermissionRequest() { _uiState.value = _uiState.value.copy(requiresMicrophonePermission = false) }
     fun dismissOverlayPermissionRequest() {
@@ -369,6 +401,43 @@ class AppViewModel(
                 _uiState.value = _uiState.value.copy(message = "AI 建议已应用。")
             }.onFailure {
                 _uiState.value = _uiState.value.copy(message = it.message ?: "应用 AI 建议失败。")
+            }
+        }
+    }
+
+    /**
+     * 把 AI 整理后的内容还原回 originalContent。语义：
+     * - 仅 note.originalContent 非空才有意义；
+     * - content 回滚到 originalContent，originalContent 清空（一次性还原）；
+     * - title/category/priority/colorToken/tags 不动——用户可能在 apply 之后又手改过这些，
+     *   一刀切回滚反而会丢用户意图，content 是 AI 改写最重的一项，先解决主要矛盾；
+     * - aiSuggestion 状态打回 DISMISSED，便于用户后续重整。
+     */
+    fun restoreOriginalContent(noteId: String) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val note = container.noteRepository.getNote(noteId)
+                        ?: error("找不到对应便签。")
+                    val original = note.originalContent
+                        ?: error("这条便签没有可还原的原内容。")
+                    val restored = note.copy(
+                        content = original,
+                        originalContent = null,
+                    )
+                    val saved = container.noteRepository.saveNote(restored)
+                    runCatching {
+                        container.aiSuggestionRepository.markStatus(
+                            noteId,
+                            com.ydoc.app.model.AiSuggestionStatus.DISMISSED,
+                        )
+                    }
+                    syncIfEnabled(saved)
+                }
+            }.onSuccess {
+                _uiState.value = _uiState.value.copy(message = "已还原为原内容。")
+            }.onFailure {
+                _uiState.value = _uiState.value.copy(message = it.message ?: "还原失败。")
             }
         }
     }
@@ -796,34 +865,93 @@ class AppViewModel(
         }
     }
 
-    fun saveDraft() {
-        val draft = _uiState.value.draft
-        val content = draft.content.trim()
-        if (content.isBlank()) {
-            _uiState.value = _uiState.value.copy(
-                captureExpanded = true,
-                message = "先输入一点内容。",
-            )
+    fun saveQuickText(rawContent: String) {
+        saveNewNote(rawContent, emptyList())
+    }
+
+    /**
+     * 从 NewNoteEditor 保存：文字 / 附件可任一为空，但不能都空。
+     * - 只有文字 → createTextNote，和旧 saveQuickText 等价。
+     * - 带附件（无论有没有文字）→ createAttachmentNote，每张图排 ImageAnalyzeWorker 做 OCR + Vision。
+     */
+    fun saveNewNote(rawContent: String, attachments: List<com.ydoc.app.model.NoteAttachment>) {
+        val content = rawContent.trim()
+        if (content.isBlank() && attachments.isEmpty()) {
+            _uiState.value = _uiState.value.copy(message = "先写点什么或加一张图吧。")
             return
         }
         viewModelScope.launch {
             val note = withContext(Dispatchers.IO) {
-                container.noteRepository.createTextNote(content, draft.category, draft.priority, draft.tags)
+                if (attachments.isEmpty()) {
+                    container.noteRepository.createTextNote(
+                        content = content,
+                        category = NoteCategory.NOTE,
+                        priority = NotePriority.MEDIUM,
+                        tags = emptyList(),
+                    )
+                } else {
+                    container.noteRepository.createAttachmentNote(
+                        attachments = attachments,
+                        hint = content,
+                    )
+                }
             }
-            // 立即重置 draft，不等待 sync + AI
+            // 每张图排一轮 OCR + Vision 分析
+            attachments.forEach { att ->
+                com.ydoc.app.sync.ImageAnalyzeWorker.scheduleBoth(
+                    getApplication(), note.id, att.id,
+                )
+            }
             _uiState.value = _uiState.value.copy(
-                draft = CaptureDraft(category = draft.category, priority = draft.priority),
-                captureExpanded = false,
+                showNewNoteEditor = false,
                 isSaving = false,
-                message = "已保存到本地 inbox。",
+                message = if (attachments.isEmpty()) "已保存到本地 inbox。"
+                    else "已保存带 ${attachments.size} 张图的笔记。",
             )
-            // sync + AI 在后台独立运行，不阻塞 UI
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { syncIfEnabled(note) }
             }
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching { container.aiOrchestrator.maybeAnalyze(note.id, AiRunTrigger.TEXT_SAVE) }
             }
+        }
+    }
+
+    /**
+     * EditNoteCard 的「+ 加图」按钮调用：新 imported 的附件先 stage 在 draft，**不**立即落库。
+     * 用户点保存才真正 commit（见 saveEditedNote），点取消会清盘回滚（见 cancelEditing）。
+     */
+    fun stageAddAttachments(attachments: List<com.ydoc.app.model.NoteAttachment>) {
+        if (attachments.isEmpty()) return
+        val draft = _uiState.value.editingNote ?: return
+        _uiState.value = _uiState.value.copy(
+            editingNote = draft.copy(
+                pendingAddedAttachments = draft.pendingAddedAttachments + attachments,
+            ),
+        )
+    }
+
+    /**
+     * EditNoteCard 的附件 × 按钮调用：
+     * - 刚 stage 的新图（在 pendingAdded 里）→ 直接从 pending 剔除 + 清盘（没必要延迟）
+     * - 已存在的老图 → 只标记为待删，保存才真删，取消能回滚
+     */
+    fun stageRemoveAttachment(attachmentId: String) {
+        val draft = _uiState.value.editingNote ?: return
+        val pendingAdded = draft.pendingAddedAttachments.firstOrNull { it.id == attachmentId }
+        if (pendingAdded != null) {
+            viewModelScope.launch(Dispatchers.IO) { container.attachmentStore.delete(pendingAdded) }
+            _uiState.value = _uiState.value.copy(
+                editingNote = draft.copy(
+                    pendingAddedAttachments = draft.pendingAddedAttachments.filterNot { it.id == attachmentId },
+                ),
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                editingNote = draft.copy(
+                    pendingRemovedAttachmentIds = draft.pendingRemovedAttachmentIds + attachmentId,
+                ),
+            )
         }
     }
 
@@ -843,11 +971,35 @@ class AppViewModel(
 
     fun saveEditedNote() {
         val editing = _uiState.value.editingNote ?: return
-        if (editing.content.trim().isBlank()) {
+        // 附件可以单独存在于笔记里（加了图但删了文字也算有效内容），所以只在"文字为空 && effectiveAttachments 为空"时拒保存。
+        if (editing.content.trim().isBlank() && editing.effectiveAttachments.isEmpty()) {
             _uiState.value = _uiState.value.copy(message = "编辑内容不能为空。")
             return
         }
         viewModelScope.launch {
+            // 1. 先把 pending 的附件操作 commit 到 DB，让后续 saveEditedNote 拿到的 existing.attachments 已是最新。
+            withContext(Dispatchers.IO) {
+                // 删除：先清盘（对应文件属于 attachments 快照里的 File）再从笔记 attachments 里摘
+                editing.pendingRemovedAttachmentIds.forEach { attId ->
+                    val target = editing.attachments.firstOrNull { it.id == attId }
+                    container.noteRepository.removeAttachmentFromNote(editing.noteId, attId)
+                    if (target != null) {
+                        container.attachmentStore.delete(target)
+                        // relay 侧孤儿：best-effort 清远端文件。失败不阻塞本地删除。
+                        runCatching { deleteRemoteAttachmentIfAny(target) }
+                    }
+                }
+                // 新增：落库 + 排 OCR+Vision Worker
+                if (editing.pendingAddedAttachments.isNotEmpty()) {
+                    container.noteRepository.addAttachmentsToNote(editing.noteId, editing.pendingAddedAttachments)
+                    editing.pendingAddedAttachments.forEach { att ->
+                        com.ydoc.app.sync.ImageAnalyzeWorker.scheduleBoth(
+                            getApplication(), editing.noteId, att.id,
+                        )
+                    }
+                }
+            }
+            // 2. 再保存内容字段（content / category / priority / tags）
             val updated = withContext(Dispatchers.IO) {
                 val existing = container.noteRepository.getNote(editing.noteId) ?: return@withContext null
                 container.noteRepository.saveEditedNote(
@@ -871,6 +1023,14 @@ class AppViewModel(
         }
     }
 
+    /** 尝试调 relay DELETE 清掉服务端的图片副本。relay 没配 / 没 remoteUrl / 网络失败都吃掉。 */
+    private suspend fun deleteRemoteAttachmentIfAny(attachment: com.ydoc.app.model.NoteAttachment) {
+        val remote = attachment.remoteUrl?.takeIf { it.isNotBlank() } ?: return
+        val relay = _uiState.value.settings.relay
+        if (!relay.enabled || relay.baseUrl.isBlank() || relay.token.isBlank()) return
+        runCatching { container.imageAnalyzeClient.deleteByRemoteUrl(relay, remote) }
+    }
+
     fun deleteNote(noteId: String) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
@@ -889,6 +1049,25 @@ class AppViewModel(
                 )
             }.onFailure {
                 _uiState.value = _uiState.value.copy(message = it.message ?: "移入回收站失败。")
+            }
+        }
+    }
+
+    /** 主界面 category pill 点击切换类型：没变化就 noop；变了就立即写库 + 触发同步。 */
+    fun changeNoteCategory(noteId: String, category: NoteCategory) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val note = container.noteRepository.getNote(noteId) ?: return@launch
+                if (note.category == category) return@launch
+                val updated = container.noteRepository.saveNote(
+                    note.copy(
+                        category = category,
+                        colorToken = defaultColorFor(category, note.priority),
+                    ),
+                )
+                runCatching { syncIfEnabled(updated) }
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(message = e.message ?: "切换类型失败。")
             }
         }
     }
@@ -955,6 +1134,11 @@ class AppViewModel(
                         val relayConfig = _uiState.value.settings.relay
                         if (relayConfig.enabled && !note.relayFileId.isNullOrBlank()) {
                             runCatching { container.relayStorageClient.delete(note.relayFileId, relayConfig) }
+                        }
+                        // 清图片附件的本地文件 + relay 远端副本（best-effort，一个失败不影响其它）
+                        note.attachments.forEach { att ->
+                            runCatching { container.attachmentStore.delete(att) }
+                            runCatching { deleteRemoteAttachmentIfAny(att) }
                         }
                     }
                     container.noteRepository.deleteNote(noteId)
@@ -1031,27 +1215,34 @@ class AppViewModel(
             return
         }
         _uiState.value = _uiState.value.copy(
-            captureExpanded = true,
             pendingQuickRecord = false,
             recording = RecordingUiState(state = RecordingState.STARTING),
         )
         viewModelScope.launch {
             val app = getApplication<Application>()
             val startResult = withContext(Dispatchers.IO) {
-                runCatching {
+                try {
                     if (container.audioRecorder.isRecording) {
                         container.audioRecorder.cancel()
                         app.stopService(Intent(app, RecordingService::class.java))
                     }
-                    val output = container.audioRecorder.start()
-                    runCatching {
+                    // Android 14 FOREGROUND_SERVICE_MICROPHONE：先把 FGS 拉起再录音，
+                    // 否则进程被后台化时 MediaRecorder.start() 直接抛异常。
+                    try {
                         ContextCompat.startForegroundService(app, Intent(app, RecordingService::class.java))
-                    }.getOrElse { serviceError ->
-                        container.audioRecorder.cancel()
-                        app.stopService(Intent(app, RecordingService::class.java))
+                    } catch (serviceError: Throwable) {
                         throw IllegalStateException("录音服务启动失败，请重试。", serviceError)
                     }
-                    output.path
+                    delay(120)
+                    val output = try {
+                        container.audioRecorder.start()
+                    } catch (error: Throwable) {
+                        app.stopService(Intent(app, RecordingService::class.java))
+                        throw error
+                    }
+                    Result.success(output.path)
+                } catch (e: Throwable) {
+                    Result.failure<String>(e)
                 }
             }
             val startedPath = startResult.getOrNull()
@@ -1068,7 +1259,6 @@ class AppViewModel(
                 stopRecordingTimer()
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
-                    captureExpanded = true,
                     pendingQuickRecord = false,
                     message = error?.message ?: "录音启动失败。",
                 )
@@ -1077,82 +1267,69 @@ class AppViewModel(
     }
 
     fun stopRecording() {
-        val currentPriority = _uiState.value.draft.priority
+        val currentPriority = NotePriority.MEDIUM
         val currentSettings = _uiState.value.settings
-        // 立刻收起 HeroCaptureCard，避免转写/上传阻塞把用户困在录音态
         _uiState.value = _uiState.value.copy(
-            captureExpanded = false,
             pendingQuickRecord = false,
             recording = _uiState.value.recording.copy(state = RecordingState.SAVING),
         )
         viewModelScope.launch {
             val app = getApplication<Application>()
-            val noteResult = withContext(Dispatchers.IO) {
+            // 第一阶段：本地落 note（几百毫秒），立刻切 IDLE 让 dock 恢复两个按钮。
+            val createResult = withContext(Dispatchers.IO) {
                 runCatching {
-                    container.voiceNoteProcessor.stopAndSave(
-                        priority = currentPriority,
-                        relayConfig = currentSettings.relay,
-                        volcengineConfig = currentSettings.volcengine,
-                        wifiOnly = currentSettings.webDav.wifiOnly,
-                    )
+                    container.voiceNoteProcessor.stopAndCreateNote(currentPriority)
                 }
             }
             app.stopService(Intent(app, RecordingService::class.java))
             stopRecordingTimer()
-            noteResult.onSuccess { result ->
+
+            createResult.onSuccess { saveResult ->
+                val note = saveResult.note
                 val completionMessage = pendingRecordingCompletionMessage
                 pendingRecordingCompletionMessage = null
-                _uiState.value = _uiState.value.copy(
-                    message = completionMessage ?: result.buildUserMessage(null),
-                )
-                // sync 在后台独立运行，不阻塞 UI（AI 会在转写完成后自动触发）
-                viewModelScope.launch(Dispatchers.IO) {
-                    runCatching { syncIfEnabled(result.note) }
+                val uploadingRelay = currentSettings.relay.enabled
+                val submitVolc = uploadingRelay && currentSettings.volcengine.enabled
+                val quickMessage = when {
+                    completionMessage != null -> completionMessage
+                    submitVolc -> "录音已保存，后台上传并转写中…"
+                    uploadingRelay -> "录音已保存，后台上传中转服务中…"
+                    else -> saveResult.buildUserMessage(null)
                 }
-            }.onFailure {
+                _uiState.value = _uiState.value.copy(message = quickMessage)
+
+                // 第二阶段：relay upload + 豆包转写 + AI 分析；独立 coroutine，不阻塞 UI。
+                viewModelScope.launch(Dispatchers.IO) {
+                    val processResult = runCatching {
+                        if (uploadingRelay) {
+                            container.voiceNoteProcessor.processNoteInBackground(
+                                noteId = note.id,
+                                relayConfig = currentSettings.relay,
+                                volcengineConfig = currentSettings.volcengine,
+                                wifiOnly = currentSettings.webDav.wifiOnly,
+                            )
+                        } else {
+                            saveResult
+                        }
+                    }
+                    processResult.onSuccess { finalResult ->
+                        // 后台处理有错误消息（如转写失败）时，再通过 message 通知一次
+                        finalResult.remoteError?.takeIf { it.isNotBlank() }?.let { err ->
+                            _uiState.value = _uiState.value.copy(message = err)
+                        }
+                        runCatching { syncIfEnabled(finalResult.note) }
+                    }.onFailure { e ->
+                        _uiState.value = _uiState.value.copy(
+                            message = e.message?.take(200) ?: "后台处理失败。",
+                        )
+                        runCatching { syncIfEnabled(note) }
+                    }
+                }
+            }.onFailure { e ->
                 pendingRecordingCompletionMessage = null
                 _uiState.value = _uiState.value.copy(
-                    message = it.message ?: "录音保存失败。",
+                    message = e.message ?: "录音保存失败。",
                 )
-            }
-            return@launch
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val output = container.audioRecorder.stop()
-                    app.stopService(Intent(app, RecordingService::class.java))
-                    var note = container.noteRepository.createVoiceNote(
-                        noteId = java.util.UUID.randomUUID().toString(),
-                        audioPath = output.path,
-                        audioFormat = output.format,
-                        priority = currentPriority,
-                    )
-                    val relayConfig = _uiState.value.settings.relay
-                    if (relayConfig.enabled) {
-                        val upload = container.relayStorageClient.upload(java.io.File(output.path), relayConfig)
-                        note = container.noteRepository.attachRelayInfo(note, upload.fileId, upload.url, upload.expiresAt)
-                    }
-                    val volcengineConfig = _uiState.value.settings.volcengine
-                    if (relayConfig.enabled && volcengineConfig.enabled && !note.relayUrl.isNullOrBlank()) {
-                        runCatching {
-                            container.transcriptionOrchestrator.transcribe(note, volcengineConfig, relayConfig)
-                        }.onFailure {
-                            container.transcriptionScheduler.enqueueRetry(note.id, _uiState.value.settings.webDav.wifiOnly)
-                            throw it
-                        }
-                        note = container.noteRepository.getNote(note.id) ?: note
-                    }
-                    syncIfEnabled(note)
-                }
-            }.onSuccess {
-                stopRecordingTimer()
-                _uiState.value = _uiState.value.copy(message = when {
-                    _uiState.value.settings.relay.enabled && _uiState.value.settings.volcengine.enabled -> "录音已保存，已上传中转服务并提交火山转写。"
-                    _uiState.value.settings.relay.enabled -> "录音已保存并上传到中转服务。"
-                    else -> "录音已保存。"
-                })
-            }.onFailure {
-                stopRecordingTimer()
-                _uiState.value = _uiState.value.copy(message = it.message ?: "录音保存失败。")
             }
         }
     }
@@ -1167,7 +1344,6 @@ class AppViewModel(
             stopRecordingTimer()
             _uiState.value = _uiState.value.copy(
                 pendingQuickRecord = false,
-                captureExpanded = _uiState.value.draft.content.isNotBlank(),
                 message = "录音已取消。",
             )
         }

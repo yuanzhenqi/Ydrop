@@ -17,6 +17,8 @@ from .database import close_db, get_db
 from .models import AiAnalyzeRequest, AiAnalyzeResponse, DeleteResponse, HealthResponse, UploadResponse
 from . import settings_store
 from .routes_ai import router as ai_router
+from .routes_images import router as images_router
+from .routes_links import router as links_router
 from .routes_notes import router as notes_router
 from .routes_reminders import router as reminders_router
 from .routes_settings import router as settings_router
@@ -55,6 +57,8 @@ app.include_router(notes_router)
 app.include_router(reminders_router)
 app.include_router(sync_router)
 app.include_router(ai_router)
+app.include_router(links_router)
+app.include_router(images_router)
 app.include_router(settings_router)
 
 
@@ -96,10 +100,16 @@ async def analyze_ai_note(payload: AiAnalyzeRequest) -> AiAnalyzeResponse:
     return analyze_note(payload)
 
 
-# ── 静态文件服务（Next.js 导出） ──
+# ── 静态文件服务（Next.js 导出 + 图片附件） ──
 
 settings = get_settings()
 static_dir = settings.static_dir
+
+# 图片附件落在 static_dir/images/；即使前端没构建也要能访问
+# （图片分析接口返回的 remote_url 指向 /static/images/...）。
+images_dir = static_dir / "images"
+images_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/images", StaticFiles(directory=str(images_dir)), name="attachment-images")
 
 if static_dir.exists() and (static_dir / "_next").exists():
     app.mount("/_next", StaticFiles(directory=str(static_dir / "_next")), name="next-static")

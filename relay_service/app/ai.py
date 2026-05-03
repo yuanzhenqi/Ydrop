@@ -75,13 +75,62 @@ STRUCTURED_OUTPUT_REQUIREMENTS = (
 def build_system_prompt(payload: AiAnalyzeRequest) -> str:
     context = _resolve_time_context(payload)
     base_prompt = _build_base_prompt(payload.prompt, context)
+    link_section = _render_link_previews_section(payload)
+    image_section = _render_image_contexts_section(payload)
     return (
         f"Current system time: {context['current_time']}\n"
         f"Current system timezone: {context['current_timezone']}\n"
         f"Current system Unix milliseconds: {context['current_time_ms']}\n"
         "Resolve all relative dates and times against this context.\n\n"
-        f"{base_prompt}\n\n{TIME_RESOLUTION_RULES}\n\n{STRUCTURED_OUTPUT_REQUIREMENTS}"
+        f"{base_prompt}\n\n{link_section}{image_section}{TIME_RESOLUTION_RULES}\n\n{STRUCTURED_OUTPUT_REQUIREMENTS}"
     )
+
+
+def _render_image_contexts_section(payload: AiAnalyzeRequest) -> str:
+    """把 Android 侧 OCR + vision 的描述注入 prompt，让"一张截图 + 一句话"的笔记也能整理。"""
+    contexts = getattr(payload, "imageContexts", None) or []
+    if not contexts:
+        return ""
+    lines = [
+        "IMAGE_CONTEXTS (OCR text + vision-model descriptions of attached images; "
+        "treat them as part of the note body when deciding category / todo / reminder):"
+    ]
+    for idx, ic in enumerate(contexts[:5], start=1):
+        ocr = (ic.ocrText or "").strip()
+        desc = (ic.aiDescription or "").strip()
+        kw = list(ic.keywords or [])
+        # 与 Android 端 RelayAiClient 的 prompt 截断对齐：OCR 800 / desc 600 / 关键词 10。
+        # 之前 300/240 偏紧，复杂截图的关键 todo 文本被砍掉，AI 整理出来内容就缺。
+        if ocr:
+            lines.append(f"- 图{idx} OCR: {ocr[:800]}")
+        if desc:
+            lines.append(f"- 图{idx} 描述: {desc[:600]}")
+        if kw:
+            lines.append(f"- 图{idx} 关键词: {'、'.join(kw[:10])}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _render_link_previews_section(payload: AiAnalyzeRequest) -> str:
+    """把预抓的链接预览注入 prompt，让模型对"只有一个 URL"的笔记也能产出像样的 title/category。"""
+    previews = getattr(payload, "linkPreviews", None) or []
+    if not previews:
+        return ""
+    lines = [
+        "LINK_PREVIEWS (pre-fetched metadata for URLs embedded in the note; "
+        "use these to infer topic / intent when the note body is mostly just URLs):"
+    ]
+    for p in previews[:5]:
+        title = (p.title or "").strip()
+        desc = (p.summary or "").strip() or (p.description or "").strip()
+        parts = ["-"]
+        if title:
+            parts.append(f"《{title}》")
+        parts.append(p.url)
+        if desc:
+            parts.append("—")
+            parts.append(desc[:160])
+        lines.append(" ".join(parts))
+    return "\n".join(lines) + "\n\n"
 
 
 def _build_base_prompt(prompt: str | None, context: dict[str, str]) -> str:

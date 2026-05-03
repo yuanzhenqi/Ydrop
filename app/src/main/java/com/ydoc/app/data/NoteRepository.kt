@@ -3,7 +3,9 @@ package com.ydoc.app.data
 import com.ydoc.app.data.local.NoteDao
 import com.ydoc.app.data.local.TombstoneDao
 import com.ydoc.app.data.local.TombstoneEntity
+import com.ydoc.app.model.LinkPreview
 import com.ydoc.app.model.Note
+import com.ydoc.app.model.NoteAttachment
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NotePriority
 import com.ydoc.app.model.NoteSource
@@ -13,11 +15,16 @@ import com.ydoc.app.model.defaultColorFor
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 class NoteRepository(
     private val noteDao: NoteDao,
     private val tombstoneDao: TombstoneDao,
+    // 每次笔记文本变化时触发的副作用（链接预览 schedule 等）。保持可空，单元测试不需要。
+    private val onNoteContentChanged: ((String) -> Unit)? = null,
 ) {
+    private val previewJson = Json { ignoreUnknownKeys = true; encodeDefaults = false }
     fun observeNotes(): Flow<List<Note>> = noteDao.observeAll().map { notes -> notes.map { it.toModel() } }
 
     suspend fun getNote(noteId: String): Note? = noteDao.getById(noteId)?.toModel()
@@ -62,6 +69,7 @@ class NoteRepository(
             tags = tags,
         )
         noteDao.upsert(note.toEntity())
+        onNoteContentChanged?.invoke(note.id)
         return note
     }
 
@@ -140,6 +148,7 @@ class NoteRepository(
             syncError = null,
         )
         noteDao.update(updated.toEntity())
+        onNoteContentChanged?.invoke(updated.id)
         return updated
     }
 
@@ -151,7 +160,94 @@ class NoteRepository(
             syncError = null,
         )
         noteDao.update(updated.toEntity())
+        onNoteContentChanged?.invoke(updated.id)
         return updated
+    }
+
+    /**
+     * 回写 note 的链接预览数据。**不**更新 updatedAt / status，避免把笔记打回
+     * LOCAL_ONLY 触发一次多余的 WebDAV 同步——链接预览是系统后台产物，同步过去也没意义。
+     */
+    suspend fun setLinkPreviews(noteId: String, previews: List<LinkPreview>) {
+        val encoded = if (previews.isEmpty()) null
+            else previewJson.encodeToString(ListSerializer(LinkPreview.serializer()), previews)
+        noteDao.updateLinkPreviewsJson(noteId, encoded)
+    }
+
+    private suspend fun writeAttachments(noteId: String, attachments: List<NoteAttachment>) {
+        val encoded = if (attachments.isEmpty()) null
+            else previewJson.encodeToString(ListSerializer(NoteAttachment.serializer()), attachments)
+        noteDao.updateAttachmentsJson(noteId, encoded)
+    }
+
+    /** 一条已存在笔记追加附件；幂等（同 id 不会重复）。 */
+    suspend fun addAttachmentsToNote(noteId: String, added: List<NoteAttachment>) {
+        if (added.isEmpty()) return
+        val current = getNote(noteId)?.attachments.orEmpty()
+        val existingIds = current.map { it.id }.toSet()
+        val merged = current + added.filter { it.id !in existingIds }
+        writeAttachments(noteId, merged)
+    }
+
+    /** 从笔记里移除一条附件；不删本地文件，调用方自己决定。 */
+    suspend fun removeAttachmentFromNote(noteId: String, attachmentId: String) {
+        val current = getNote(noteId)?.attachments.orEmpty()
+        writeAttachments(noteId, current.filterNot { it.id == attachmentId })
+    }
+
+    /** 后台 OCR / vision 回调用这个更新单条附件，不动其它附件或笔记字段。 */
+    suspend fun updateAttachment(noteId: String, attachmentId: String, mutate: (NoteAttachment) -> NoteAttachment) {
+        val current = getNote(noteId)?.attachments.orEmpty()
+        val next = current.map { if (it.id == attachmentId) mutate(it) else it }
+        writeAttachments(noteId, next)
+    }
+
+    /** 用附件新建一条 IMAGE 笔记（系统分享、PhotoPicker 进入）。 */
+    suspend fun createAttachmentNote(
+        attachments: List<NoteAttachment>,
+        hint: String = "",
+        category: NoteCategory = NoteCategory.NOTE,
+        priority: NotePriority = NotePriority.MEDIUM,
+    ): Note {
+        require(attachments.isNotEmpty()) { "至少要有一张附件才能建带图笔记。" }
+        val now = System.currentTimeMillis()
+        val trimmedHint = hint.trim()
+        val note = Note(
+            id = UUID.randomUUID().toString(),
+            title = trimmedHint.lineSequence().firstOrNull()?.take(36).orEmpty()
+                .ifBlank { "图片记录" },
+            content = trimmedHint.ifBlank { "（待 AI 整理）" },
+            source = NoteSource.TEXT,
+            category = category,
+            priority = priority,
+            colorToken = defaultColorFor(category, priority),
+            status = NoteStatus.LOCAL_ONLY,
+            createdAt = now,
+            updatedAt = now,
+            lastSyncedAt = null,
+            audioPath = null,
+            audioFormat = null,
+            audioPublicUri = null,
+            relayFileId = null,
+            relayUrl = null,
+            relayExpiresAt = null,
+            transcript = null,
+            transcriptionStatus = TranscriptionStatus.NOT_STARTED,
+            transcriptionError = null,
+            transcriptionRequestId = null,
+            transcriptionUpdatedAt = null,
+            syncError = null,
+            pinned = false,
+            isArchived = false,
+            archivedAt = null,
+            isTrashed = false,
+            trashedAt = null,
+            tags = emptyList(),
+            attachments = attachments,
+        )
+        noteDao.upsert(note.toEntity())
+        onNoteContentChanged?.invoke(note.id)
+        return note
     }
 
     suspend fun attachRelayInfo(
@@ -209,6 +305,9 @@ class NoteRepository(
                 lastSyncedAt = null,
             ).toEntity(),
         )
+        // 转写完成本身就是一次内容变化，也应该触发链接预览扫描——
+        // 用户常常说一个 URL，转写进了 content 里才有被识别的机会。
+        onNoteContentChanged?.invoke(noteId)
     }
 
     /** 扫描存量 VOICE note，把仍为占位符的 title 从 content/transcript 抽一个新标题。只修占位符。 */
@@ -309,11 +408,17 @@ class NoteRepository(
             noteDao.upsert(note.toEntity())
         }
         tombstoneDao.deleteById(note.id)
+        // 远端拉下来的笔记也可能包含链接——重新扫一次。
+        onNoteContentChanged?.invoke(note.id)
     }
 
     fun observeActiveNotes(): Flow<List<Note>> = noteDao.observeActive().map { it.map { entity -> entity.toModel() } }
     fun observeArchivedNotes(): Flow<List<Note>> = noteDao.observeArchived().map { it.map { entity -> entity.toModel() } }
     fun observeTrashedNotes(): Flow<List<Note>> = noteDao.observeTrashed().map { it.map { entity -> entity.toModel() } }
+
+    // 专供 AI 助手收集上下文：活跃 + 归档都要，只排回收站。
+    fun observeAgentContextNotes(): Flow<List<Note>> =
+        noteDao.observeAgentContextNotes().map { it.map { entity -> entity.toModel() } }
 
     suspend fun archiveNote(noteId: String): Note {
         val now = System.currentTimeMillis()

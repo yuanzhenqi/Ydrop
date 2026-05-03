@@ -37,4 +37,6 @@ data class NoteEntity(
     val isTrashed: Boolean,
     val trashedAt: Long?,
     val tagsJson: String? = null,
+    val linkPreviewsJson: String? = null,
+    val attachmentsJson: String? = null,
 )

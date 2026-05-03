@@ -9,6 +9,7 @@ object AppLogger {
     fun relay(message: String) = Log.d("YDOC_RELAY", message)
     fun volc(message: String) = Log.d("YDOC_VOLC", message)
     fun sync(message: String) = Log.d("YDOC_SYNC", message)
+    fun agent(message: String) = Log.d("YDOC_AGENT", message)
 
     fun error(tag: String, message: String, throwable: Throwable? = null) {
         Log.e(tag, message, throwable)

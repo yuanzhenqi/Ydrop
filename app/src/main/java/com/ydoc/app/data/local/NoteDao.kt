@@ -15,6 +15,10 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE isTrashed = 0 AND isArchived = 0 ORDER BY pinned DESC, updatedAt DESC")
     fun observeActive(): Flow<List<NoteEntity>>
 
+    // AI 助手上下文：活跃 + 归档都要，只排除回收站——用户常问的"归档里 X 相关"之前会因 observeActive 过滤掉而找不到。
+    @Query("SELECT * FROM notes WHERE isTrashed = 0 ORDER BY pinned DESC, updatedAt DESC")
+    fun observeAgentContextNotes(): Flow<List<NoteEntity>>
+
     @Query("SELECT * FROM notes WHERE isArchived = 1 AND isTrashed = 0 ORDER BY archivedAt DESC")
     fun observeArchived(): Flow<List<NoteEntity>>
 
@@ -62,4 +66,13 @@ interface NoteDao {
 
     @Query("SELECT * FROM notes WHERE isTrashed = 1")
     suspend fun getTrashed(): List<NoteEntity>
+
+    // 只改 linkPreviewsJson，不动 updatedAt / status / lastSyncedAt——
+    // 链接预览是系统后台产物，不应该把笔记推回 LOCAL_ONLY 触发一次多余的 WebDAV 推送。
+    @Query("UPDATE notes SET linkPreviewsJson = :json WHERE id = :id")
+    suspend fun updateLinkPreviewsJson(id: String, json: String?)
+
+    // 同理：只改 attachmentsJson。OCR / vision 分析结果回填属于后台副作用，不应影响同步状态。
+    @Query("UPDATE notes SET attachmentsJson = :json WHERE id = :id")
+    suspend fun updateAttachmentsJson(id: String, json: String?)
 }

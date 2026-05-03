@@ -85,6 +85,23 @@ data class AiAnalyzeRequest(
     val prompt: String? = null,
     val existingTags: List<String> = emptyList(),
     val currentTags: List<String> = emptyList(),
+    /**
+     * 笔记里已经抓取到预览的链接列表。让 AI 整理时能看到链接的 title / summary，
+     * 从而对"只有一个 URL"的笔记也能产出像样的 suggestedTitle / suggestedCategory。
+     */
+    val linkPreviews: List<LinkPreview> = emptyList(),
+    /**
+     * 笔记的图片上下文：本地 OCR + relay vision 返回的描述 + 关键词。
+     * 让 AI 对"一张截图 + 一句话"的笔记也能产出合理的 title/category/提醒候选。
+     */
+    val imageContexts: List<ImageContext> = emptyList(),
+)
+
+@Serializable
+data class ImageContext(
+    val ocrText: String = "",
+    val aiDescription: String = "",
+    val keywords: List<String> = emptyList(),
 )
 
 @Serializable

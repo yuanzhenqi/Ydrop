@@ -673,6 +673,48 @@ class RelayAiClient(
                         buildJsonArray { request.currentTags.forEach { add(JsonPrimitive(it)) } },
                     )
                 }
+                if (request.linkPreviews.isNotEmpty()) {
+                    // 只给 provider 看有用的几个字段，image_url/fetchedAt/error 对 LLM 整理没价值
+                    put(
+                        "linkPreviews",
+                        buildJsonArray {
+                            request.linkPreviews.forEach { preview ->
+                                add(
+                                    buildJsonObject {
+                                        put("url", JsonPrimitive(preview.url))
+                                        if (preview.title.isNotBlank()) put("title", JsonPrimitive(preview.title))
+                                        val desc = preview.summary.ifBlank { preview.description }
+                                        if (desc.isNotBlank()) put("summary", JsonPrimitive(desc))
+                                        if (preview.siteName.isNotBlank()) put("siteName", JsonPrimitive(preview.siteName))
+                                    },
+                                )
+                            }
+                        },
+                    )
+                }
+                if (request.imageContexts.isNotEmpty()) {
+                    // OCR 文本是图片中最有信息密度的内容，截太狠会让 AI 整理失去关键文字。
+                    // 800 → 1500：足够覆盖一张截图常见的多段文本；ai 描述同步放宽到 800。
+                    put(
+                        "imageContexts",
+                        buildJsonArray {
+                            request.imageContexts.forEach { ic ->
+                                add(
+                                    buildJsonObject {
+                                        if (ic.ocrText.isNotBlank()) put("ocrText", JsonPrimitive(ic.ocrText.take(1500)))
+                                        if (ic.aiDescription.isNotBlank()) put("aiDescription", JsonPrimitive(ic.aiDescription.take(800)))
+                                        if (ic.keywords.isNotEmpty()) {
+                                            put(
+                                                "keywords",
+                                                buildJsonArray { ic.keywords.take(10).forEach { add(JsonPrimitive(it)) } },
+                                            )
+                                        }
+                                    },
+                                )
+                            }
+                        },
+                    )
+                }
             },
         )
 
@@ -707,6 +749,36 @@ class RelayAiClient(
             if (request.currentTags.isNotEmpty()) {
                 appendLine("CURRENT_TAGS (tags already on this note — do NOT re-suggest these):")
                 appendLine(request.currentTags.joinToString(", "))
+                appendLine()
+            }
+            if (request.linkPreviews.isNotEmpty()) {
+                appendLine("LINK_PREVIEWS (pre-fetched metadata for URLs embedded in the note; use these to infer topic / intent when the note body is mostly just URLs):")
+                request.linkPreviews.forEach { p ->
+                    val line = buildString {
+                        append("- ")
+                        if (p.title.isNotBlank()) append("《${p.title}》").append(' ')
+                        append(p.url)
+                        val desc = p.summary.ifBlank { p.description }
+                        if (desc.isNotBlank()) append(" — ").append(desc.take(160))
+                    }
+                    appendLine(line)
+                }
+                appendLine()
+            }
+            if (request.imageContexts.isNotEmpty()) {
+                appendLine("IMAGE_CONTEXTS (OCR text + vision-model descriptions of attached images; treat them as part of the note body when deciding category / todo / reminder):")
+                request.imageContexts.forEachIndexed { idx, ic ->
+                    if (ic.ocrText.isNotBlank()) {
+                        // 与 wire 截断对齐 / 略宽：800 字够覆盖一张截图的 1-3 屏文本，关键 todo 不会被砍。
+                        appendLine("- 图${idx + 1} OCR: ${ic.ocrText.take(800)}")
+                    }
+                    if (ic.aiDescription.isNotBlank()) {
+                        appendLine("- 图${idx + 1} 描述: ${ic.aiDescription.take(600)}")
+                    }
+                    if (ic.keywords.isNotEmpty()) {
+                        appendLine("- 图${idx + 1} 关键词: ${ic.keywords.joinToString("、")}")
+                    }
+                }
                 appendLine()
             }
             append(basePrompt)

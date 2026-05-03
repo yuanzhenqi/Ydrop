@@ -1,8 +1,13 @@
 package com.ydoc.app.data
 
 import android.content.Context
+import com.ydoc.app.ai.AgentApiClient
 import com.ydoc.app.ai.AiOrchestrator
+import com.ydoc.app.ai.ImageAnalyzeClient
+import com.ydoc.app.ai.ImageOcrService
+import com.ydoc.app.ai.LinkPreviewClient
 import com.ydoc.app.ai.RelayAiClient
+import com.ydoc.app.sync.LinkPreviewWorker
 import com.ydoc.app.data.local.YDocDatabase
 import com.ydoc.app.recording.AudioRecorder
 import com.ydoc.app.recording.LocalAudioExporter
@@ -46,6 +51,7 @@ class AppContainer(context: Context) {
     val audioRecorder = AudioRecorder(appContext)
     val localAudioExporter = LocalAudioExporter(appContext)
     val localAudioPlayer = LocalAudioPlayer(appContext)
+    val attachmentStore = AttachmentStore(appContext)
     val syncScheduler = SyncScheduler(appContext)
     val transcriptionScheduler = TranscriptionScheduler(appContext)
     val reminderScheduler = ReminderScheduler(appContext)
@@ -53,11 +59,21 @@ class AppContainer(context: Context) {
     val relayStorageClient: RelayStorageClient = SelfHostedRelayClient(httpClient)
     val volcengineTranscriptionClient = VolcengineTranscriptionClient(httpClient)
     val aiClient = RelayAiClient(aiHttpClient)
+    val agentApiClient = AgentApiClient(aiHttpClient)
+    val linkPreviewClient = LinkPreviewClient(aiHttpClient)
+    val imageAnalyzeClient = ImageAnalyzeClient(aiHttpClient)
+    val imageOcrService = ImageOcrService()
     val syncClients: List<SyncClient> = listOf(
         WebDavSyncClient(httpClient, markdownFormatter),
     )
 
-    val noteRepository = NoteRepository(database.noteDao(), database.tombstoneDao())
+    val noteRepository = NoteRepository(
+        noteDao = database.noteDao(),
+        tombstoneDao = database.tombstoneDao(),
+        // 每次笔记内容变化就排一下链接预览。WorkManager 的 ExistingWorkPolicy.REPLACE
+        // 保证短时间内多次保存只会跑最后一轮。没网会走系统 retry。
+        onNoteContentChanged = { noteId -> LinkPreviewWorker.schedule(appContext, noteId) },
+    )
     val aiSuggestionRepository = AiSuggestionRepository(database.aiSuggestionDao())
     val systemCalendarBridge = SystemCalendarBridge(appContext)
     val systemAlarmExporter = SystemAlarmExporter(appContext)
@@ -78,6 +94,12 @@ class AppContainer(context: Context) {
         aiSuggestionRepository = aiSuggestionRepository,
         aiClient = aiClient,
         settingsStore = settingsStore,
+    )
+    val agentRepository = AgentRepository(
+        dao = database.agentDao(),
+        api = agentApiClient,
+        settingsStore = settingsStore,
+        noteRepository = noteRepository,
     )
     val transcriptionOrchestrator = TranscriptionOrchestrator(
         noteRepository = noteRepository,

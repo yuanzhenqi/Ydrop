@@ -7,6 +7,8 @@ import com.ydoc.app.data.local.SyncTargetEntity
 import com.ydoc.app.model.AiSuggestion
 import com.ydoc.app.model.AiSuggestionStatus
 import com.ydoc.app.model.ExtractedEntity
+import com.ydoc.app.model.LinkPreview
+import com.ydoc.app.model.NoteAttachment
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NoteColorToken
 import com.ydoc.app.model.Note
@@ -62,6 +64,14 @@ fun NoteEntity.toModel(): Note =
         isTrashed = isTrashed,
         trashedAt = trashedAt,
         tags = tagsJson?.let { json.decodeFromString(ListSerializer(String.serializer()), it) } ?: emptyList(),
+        linkPreviews = linkPreviewsJson?.let {
+            runCatching { json.decodeFromString(ListSerializer(LinkPreview.serializer()), it) }
+                .getOrDefault(emptyList())
+        } ?: emptyList(),
+        attachments = attachmentsJson?.let {
+            runCatching { json.decodeFromString(ListSerializer(NoteAttachment.serializer()), it) }
+                .getOrDefault(emptyList())
+        } ?: emptyList(),
     )
 
 fun Note.toEntity(): NoteEntity =
@@ -98,6 +108,10 @@ fun Note.toEntity(): NoteEntity =
         isTrashed = isTrashed,
         trashedAt = trashedAt,
         tagsJson = if (tags.isEmpty()) null else json.encodeToString(ListSerializer(String.serializer()), tags),
+        linkPreviewsJson = if (linkPreviews.isEmpty()) null else
+            json.encodeToString(ListSerializer(LinkPreview.serializer()), linkPreviews),
+        attachmentsJson = if (attachments.isEmpty()) null else
+            json.encodeToString(ListSerializer(NoteAttachment.serializer()), attachments),
     )
 
 fun SyncTargetEntity.toModelOrNull(): SyncTarget? {

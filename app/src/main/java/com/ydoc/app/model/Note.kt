@@ -33,6 +33,8 @@ data class Note(
     val isTrashed: Boolean = false,
     val trashedAt: Long? = null,
     val tags: List<String> = emptyList(),
+    val linkPreviews: List<LinkPreview> = emptyList(),
+    val attachments: List<NoteAttachment> = emptyList(),
 )
 
 enum class NoteSource {

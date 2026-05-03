@@ -43,6 +43,24 @@ class ReminderCandidateResponse(BaseModel):
     scheduledAtIso: str | None = None  # "YYYY-MM-DDTHH:mm" 在客户端时区
 
 
+class LinkPreviewSummary(BaseModel):
+    """Android 端传上来的已抓取链接预览；relay 不再去抓一次，直接塞进 prompt。"""
+    url: str
+    title: str = ""
+    description: str = ""
+    summary: str = ""
+    siteName: str = ""
+    imageUrl: str = ""
+    error: str | None = None
+
+
+class ImageContextSummary(BaseModel):
+    """Android 端 OCR + vision 已经抓完的图片上下文；relay 不再调 vision。"""
+    ocrText: str = ""
+    aiDescription: str = ""
+    keywords: list[str] = Field(default_factory=list)
+
+
 class AiAnalyzeRequest(BaseModel):
     noteId: str
     title: str
@@ -57,6 +75,10 @@ class AiAnalyzeRequest(BaseModel):
     currentTimezone: str | None = None
     currentTimeEpochMs: int | None = None
     prompt: str | None = None
+    existingTags: list[str] = Field(default_factory=list)
+    currentTags: list[str] = Field(default_factory=list)
+    linkPreviews: list[LinkPreviewSummary] = Field(default_factory=list)
+    imageContexts: list[ImageContextSummary] = Field(default_factory=list)
 
 
 class AiAnalyzeResponse(BaseModel):
