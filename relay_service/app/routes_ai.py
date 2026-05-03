@@ -6,10 +6,11 @@ import json
 import logging
 import time
 import urllib.request
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .auth import require_relay_token
 from .config import get_settings
@@ -38,11 +39,44 @@ class ChatFilter(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("max_notes")
+    @classmethod
+    def _cap_max_notes(cls, v: int) -> int:
+        # 下限 1 上限 200：太低会丢 context，太高会把 provider 的 token 预算炸掉
+        return max(1, min(v, 200))
+
+
+class AiConfigPayload(BaseModel):
+    """App 端发过来的 AI provider 配置；服务端 settings_store 里没配时用这个。"""
+    base_url: str
+    token: str
+    model: str = "gpt-4o-mini"
+    endpoint_mode: str = "AUTO"  # AUTO | OPENAI | ANTHROPIC
+
+
+class InlineNote(BaseModel):
+    """App 端直接把本地笔记随请求带过来的载荷。Android 端走 WebDAV/NAS 不同步到 relay DB，
+    所以不能指望 relay 的 `notes` 表里有 app 用户的笔记；inline 带过来就能让 LLM 读到。"""
+    id: str
+    title: str = ""
+    content: str = ""
+    category: str = "NOTE"
+    priority: str = "MEDIUM"
+    tags: list[str] = Field(default_factory=list)
+    created_at: int = 0
+
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     filter: Optional[ChatFilter] = None
     session_id: Optional[str] = None  # 空则创建新 session
+    ai_config: Optional[AiConfigPayload] = None  # 优先用 request 里的，没带才读 relay 自己的 settings
+    inline_notes: Optional[list[InlineNote]] = None  # 优先用这个当 context；没传才回退到 relay DB 里查
+    # 客户端当前时间锚点：让 LLM 能解析"今天/本周/最近 N 天"这类相对时间表达。
+    # 不传时 server 端用 datetime.now(UTC) 兜底，但客户端时区会丢，建议传齐三个。
+    current_time_epoch_ms: Optional[int] = None
+    current_timezone: Optional[str] = None
+    current_time_text: Optional[str] = None  # 客户端格式化好的本地时间文本，避免 server 再做时区换算
 
 
 class ChatResponse(BaseModel):
@@ -89,56 +123,132 @@ class OrganizeRunDetail(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest):
     """基于用户笔记的问答。把符合筛选条件的笔记作为 context 喂给 LLM。"""
+    logger.info(
+        "chat incoming: msgs=%d roles=%s session=%s ai_cfg=%s",
+        len(body.messages),
+        [m.role for m in body.messages[:5]],
+        body.session_id or "-",
+        "yes" if (body.ai_config and body.ai_config.base_url and body.ai_config.token) else "no",
+    )
     f = body.filter or ChatFilter()
     db = await get_db()
 
-    conditions = ["is_trashed = 0"]
-    params: list = []
-    if not f.include_archived:
-        conditions.append("is_archived = 0")
-    if f.category:
-        conditions.append("category = ?")
-        params.append(f.category.upper())
-    if f.priority:
-        conditions.append("priority = ?")
-        params.append(f.priority.upper())
-    if f.tag:
-        conditions.append("tags_json LIKE ?")
-        params.append(f'%"{f.tag}"%')
-    if f.from_ts is not None:
-        conditions.append("created_at >= ?")
-        params.append(f.from_ts)
-    if f.to_ts is not None:
-        conditions.append("created_at <= ?")
-        params.append(f.to_ts)
+    # 优先用 app 端 inline 带过来的笔记当 context（Android 端笔记不同步到 relay DB，
+    # 必须走 inline 才能让 LLM 看到）。没传才回落到 relay DB 自己的 notes 表。
+    if body.inline_notes:
+        # 按 filter 在 server 侧再筛一刀，保持和 DB 路径同样的语义
+        candidates = list(body.inline_notes)
+        if f.category:
+            candidates = [n for n in candidates if (n.category or "").upper() == f.category.upper()]
+        if f.priority:
+            candidates = [n for n in candidates if (n.priority or "").upper() == f.priority.upper()]
+        if f.tag:
+            candidates = [n for n in candidates if f.tag in (n.tags or [])]
+        if f.from_ts is not None:
+            candidates = [n for n in candidates if n.created_at >= f.from_ts]
+        if f.to_ts is not None:
+            candidates = [n for n in candidates if n.created_at <= f.to_ts]
+        # 不再按 created_at 重排：app 端已经按 pinned+updatedAt 排好序并 take(80)，
+        # 这里重排会把"最近活跃"的顺序弄乱，让 LLM 看到的笔记头尾相反。
+        candidates = candidates[: f.max_notes]
+        notes = [
+            {
+                "id": n.id,
+                "title": n.title,
+                "content": _clip_note_content(n.content or ""),
+                "category": n.category,
+                "priority": n.priority,
+                "tags": list(n.tags or []),
+                "created_at": n.created_at,
+            }
+            for n in candidates
+        ]
+        logger.info("chat: using %d inline_notes (filtered from %d)", len(notes), len(body.inline_notes))
+    else:
+        conditions = ["is_trashed = 0"]
+        params: list = []
+        if not f.include_archived:
+            conditions.append("is_archived = 0")
+        if f.category:
+            conditions.append("category = ?")
+            params.append(f.category.upper())
+        if f.priority:
+            conditions.append("priority = ?")
+            params.append(f.priority.upper())
+        if f.tag:
+            conditions.append("tags_json LIKE ?")
+            params.append(f'%"{f.tag}"%')
+        if f.from_ts is not None:
+            conditions.append("created_at >= ?")
+            params.append(f.from_ts)
+        if f.to_ts is not None:
+            conditions.append("created_at <= ?")
+            params.append(f.to_ts)
 
-    where = " AND ".join(conditions)
-    rows = await db.execute_fetchall(
-        f"SELECT id, title, content, category, priority, tags_json, created_at FROM notes WHERE {where} ORDER BY updated_at DESC LIMIT ?",
-        params + [f.max_notes],
-    )
+        where = " AND ".join(conditions)
+        rows = await db.execute_fetchall(
+            f"SELECT id, title, content, category, priority, tags_json, created_at FROM notes WHERE {where} ORDER BY updated_at DESC LIMIT ?",
+            params + [f.max_notes],
+        )
 
-    notes = [
-        {
-            "id": r["id"],
-            "title": r["title"],
-            "content": r["content"][:500],
-            "category": r["category"],
-            "priority": r["priority"],
-            "tags": json.loads(r["tags_json"] or "[]"),
-            "created_at": r["created_at"],
+        notes = [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "content": _clip_note_content(r["content"] or ""),
+                "category": r["category"],
+                "priority": r["priority"],
+                "tags": json.loads(r["tags_json"] or "[]"),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    # 优先用 request 里 app 端发过来的 AI 配置；没带才回落到 relay 自己的 settings_store。
+    # 这样 app 用户只在 App 里配一次 AI 就行，不用再去改 relay 的 .env。
+    if body.ai_config and body.ai_config.base_url and body.ai_config.token:
+        ai_cfg = {
+            "enabled": True,
+            "base_url": body.ai_config.base_url,
+            "token": body.ai_config.token,
+            "model": body.ai_config.model or "gpt-4o-mini",
+            "endpoint_mode": (body.ai_config.endpoint_mode or "AUTO").upper(),
         }
-        for r in rows
-    ]
+        logger.info(
+            "chat: using request ai_config base_url=%s model=%s mode=%s",
+            ai_cfg["base_url"], ai_cfg["model"], ai_cfg["endpoint_mode"],
+        )
+    else:
+        from . import settings_store
+        ai_cfg = await settings_store.get_ai_config()
+        logger.info(
+            "chat: using relay ai_config base_url=%s enabled=%s",
+            ai_cfg.get("base_url", ""), ai_cfg.get("enabled", False),
+        )
 
-    from . import settings_store
-    ai_cfg = await settings_store.get_ai_config()
+    # 调用 provider 前打一条预览日志，方便对照客户端日志快速定位链路断点。
+    preview = ", ".join(
+        f"{(n['id'] or '')[:6]}:{(n['title'] or (n['content'] or '')[:10])[:12]}"
+        for n in notes[:3]
+    )
+    logger.info("chat: notes_for_llm=%d preview=[%s]", len(notes), preview)
+
+    # 当前时间锚点：客户端传的优先，没传就用 server 的 UTC 兜底（但缺时区可能让 LLM 算偏）。
+    time_ctx = _build_time_context(
+        body.current_time_epoch_ms,
+        body.current_timezone,
+        body.current_time_text,
+    )
+    logger.info(
+        "chat: time_ctx now=%s tz=%s ms=%s",
+        time_ctx["current_time"], time_ctx["current_timezone"], time_ctx["current_time_ms"],
+    )
 
     used_provider = False
     provider_error: Optional[str] = None
     if ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]:
         try:
-            answer = _call_chat_provider(body.messages, notes, ai_cfg)
+            answer = _call_chat_provider(body.messages, notes, ai_cfg, time_ctx)
             used_provider = True
         except Exception as e:
             logger.error("Chat provider failed: %s", e)
@@ -260,15 +370,65 @@ async def delete_session(session_id: str):
     await db.commit()
 
 
-def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dict) -> str:
+def _clip_note_content(s: str, limit: int = 1500) -> str:
+    """把笔记正文截到 limit 字再送进 LLM context。
+    之前 500 字太狠，长笔记关键段会被砍掉，导致 AI 答"没找到"。
+    超出时拼一个省略提示让模型知道后面还有内容。"""
+    s = s or ""
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"…（省略 {len(s) - limit} 字）"
+
+
+def _build_time_context(
+    epoch_ms: Optional[int],
+    tz_name: Optional[str],
+    text: Optional[str],
+) -> dict:
+    """把客户端传来的时间锚点（或 server 兜底）整理成 LLM 能直接用的字段。
+
+    - 客户端传齐 epoch_ms / tz_name / text 时直接使用，避免 server 再换算时区。
+    - 客户端没传时用 server 端 UTC 兜底，并记日志提醒（结果对中文相对时间的解析会偏）。
+    """
+    if epoch_ms is None:
+        epoch_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    tz_label = (tz_name or "").strip() or "UTC"
+    if text and text.strip():
+        time_text = text.strip()
+    else:
+        # 没有客户端文本时退到 server 时区，至少给一个可读的当前时间锚点。
+        time_text = datetime.fromtimestamp(epoch_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "current_time": time_text,
+        "current_timezone": tz_label,
+        "current_time_ms": str(epoch_ms),
+    }
+
+
+def _call_chat_provider(messages: list[ChatMessage], notes: list[dict], cfg: dict, time_ctx: dict) -> str:
     from .ai_provider import call_llm
 
+    # 系统 prompt：原来的"如果答案不在笔记里，明确说「没有找到相关笔记」"太硬，
+    # 会让模型对包含相关线索但不直接命中的问题也直接拒答。放宽成分层次：
+    # 直接答案 → 相关线索 → 完全没有才说"找不到"。
     system = (
         "你是用户的个人笔记助手。用户会用中文问你关于他自己笔记的问题。\n"
-        "下面是用户最近的笔记（JSON 数组，按更新时间倒序）。请只基于这些笔记内容回答，不要编造信息。\n"
-        "如果答案不在笔记里，明确说「没有找到相关笔记」。\n"
-        "引用笔记时用「《标题》」格式标注。\n"
-        "回答简洁，用自然中文，不要堆砌术语。\n\n"
+        f"Current system time: {time_ctx['current_time']}\n"
+        f"Current system timezone: {time_ctx['current_timezone']}\n"
+        f"Current system Unix milliseconds: {time_ctx['current_time_ms']}\n"
+        "TIME RESOLUTION RULES:\n"
+        "- 笔记的 created_at 字段是 Unix 毫秒时间戳；\n"
+        "- 用户问「今天 / 昨天 / 本周 / 最近 N 天 / 这个月」等相对时间时，请基于上面 current time 把范围算出来再过滤；\n"
+        "- 中文相对词参考：今天=当天 0-24 时；昨天=前一天；本周=本周一 0:00 至本周日 24:00；\n"
+        "  最近 N 天=current time 往前 N 天；这个月=本月 1 号 0:00 至月末。\n"
+        "- 给笔记日期时优先用 YYYY-MM-DD 形式，让用户一眼看懂；不要直接抛出 epoch ms。\n\n"
+        "回答原则：\n"
+        "1. 有直接答案就基于笔记内容作答；\n"
+        "2. 没有直接答案但有相关笔记，可以给出作为「相关线索」，并说明这是线索而非精确答案；\n"
+        "3. 完全没有相关笔记，如实说「笔记里没有找到相关内容」，再引导用户补充信息；\n"
+        "4. 不要编造笔记里没有的信息。\n"
+        "引用笔记时优先用「《标题》」格式；标题为空时用正文前 8 个字代替。\n"
+        "回答用自然中文，简洁、不堆砌术语。\n\n"
         f"用户笔记：{json.dumps(notes, ensure_ascii=False)}"
     )
 
