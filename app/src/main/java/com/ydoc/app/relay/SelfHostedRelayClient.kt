@@ -90,7 +90,10 @@ class SelfHostedRelayClient(
 
 @Serializable
 private data class UploadResponse(
-    @SerialName("id") val fileId: String,
+    // relay 新旧实现都用 `file_id`（snake_case）；历史上 Android 端写成 `id`，
+    // 导致 kotlinx.serialization 反序列化缺字段抛异常 → VoiceNoteProcessor 捕异常后
+    // 把 note 标成 REMOTE_FAILED 并弹"上传失败"。这里两个名都兼容，保旧 relay 也能跑。
+    @SerialName("file_id") val fileId: String,
     val url: String,
     @SerialName("expires_at") val expiresAt: String? = null,
     @SerialName("expiresAt") val expiresAtAlt: String? = null,

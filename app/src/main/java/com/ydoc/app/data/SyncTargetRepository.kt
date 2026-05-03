@@ -1,5 +1,6 @@
 package com.ydoc.app.data
 
+import com.ydoc.app.config.DefaultConfig
 import com.ydoc.app.data.local.SyncTargetDao
 import com.ydoc.app.model.SyncTarget
 import com.ydoc.app.model.SyncType
@@ -24,11 +25,22 @@ class SyncTargetRepository(
         val existing = dao.getAll()
         if (existing.isNotEmpty()) return
         val now = System.currentTimeMillis()
+        val webDavUrl = DefaultConfig.WEBDAV_BASE_URL
+        val defaultConfig = if (webDavUrl.isNotBlank()) {
+            WebDavConfig(
+                baseUrl = webDavUrl,
+                username = DefaultConfig.WEBDAV_USERNAME,
+                password = DefaultConfig.WEBDAV_PASSWORD,
+                folder = DefaultConfig.WEBDAV_FOLDER.ifBlank { "ydoc/inbox" },
+            )
+        } else {
+            WebDavConfig()
+        }
         dao.upsert(
             SyncTarget(
                 type = SyncType.WEBDAV,
-                enabled = false,
-                config = WebDavConfig(),
+                enabled = webDavUrl.isNotBlank(),
+                config = defaultConfig,
                 updatedAt = now,
             ).toEntity(),
         )

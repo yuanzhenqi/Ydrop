@@ -34,19 +34,21 @@ class SettingsStore(
             relay = RelayConfig(
                 baseUrl = prefs[Keys.relayBaseUrl] ?: DefaultConfig.RELAY_BASE_URL,
                 token = prefs[Keys.relayToken] ?: DefaultConfig.RELAY_TOKEN,
-                enabled = prefs[Keys.relayEnabled] ?: false,
+                enabled = prefs[Keys.relayEnabled]
+                    ?: (DefaultConfig.RELAY_BASE_URL.isNotBlank() && DefaultConfig.RELAY_TOKEN.isNotBlank()),
             ),
             volcengine = VolcengineConfig(
                 appId = prefs[Keys.volcAppId] ?: DefaultConfig.VOLC_APP_ID,
                 accessToken = prefs[Keys.volcAccessToken] ?: DefaultConfig.VOLC_ACCESS_TOKEN,
                 resourceId = prefs[Keys.volcResourceId] ?: DefaultConfig.VOLC_RESOURCE_ID,
-                enabled = prefs[Keys.volcEnabled] ?: false,
+                enabled = prefs[Keys.volcEnabled]
+                    ?: (DefaultConfig.VOLC_APP_ID.isNotBlank() && DefaultConfig.VOLC_ACCESS_TOKEN.isNotBlank()),
             ),
             ai = AiConfig(
-                enabled = prefs[Keys.aiEnabled] ?: false,
-                baseUrl = prefs[Keys.aiBaseUrl] ?: "",
-                token = prefs[Keys.aiToken] ?: "",
-                model = prefs[Keys.aiModel] ?: "ydrop-notes-v1",
+                enabled = prefs[Keys.aiEnabled] ?: DefaultConfig.AI_BASE_URL.isNotBlank(),
+                baseUrl = prefs[Keys.aiBaseUrl] ?: DefaultConfig.AI_BASE_URL,
+                token = prefs[Keys.aiToken] ?: DefaultConfig.AI_TOKEN,
+                model = prefs[Keys.aiModel] ?: DefaultConfig.AI_MODEL.ifBlank { "ydrop-notes-v1" },
                 promptSupplement = resolveAiPromptSupplement(prefs),
                 endpointMode = prefs[Keys.aiEndpointMode]
                     ?.let { runCatching { AiEndpointMode.valueOf(it) }.getOrNull() }

@@ -1,6 +1,7 @@
 package com.ydoc.app.recording
 
 import com.ydoc.app.data.NoteRepository
+import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.Note
 import com.ydoc.app.model.NotePriority
 import com.ydoc.app.model.RelayConfig
@@ -47,12 +48,11 @@ class VoiceNoteProcessor(
         REMOTE_FAILED,
     }
 
-    suspend fun stopAndSave(
-        priority: NotePriority,
-        relayConfig: RelayConfig,
-        volcengineConfig: VolcengineConfig,
-        wifiOnly: Boolean,
-    ): SaveResult {
+    /**
+     * 快速路径：停录音 + 导出到系统媒体库 + 写本地 note。几百毫秒返回，
+     * 供 UI 尽快把 SAVING 态切回 IDLE。不碰 relay / 豆包 / AI。
+     */
+    suspend fun stopAndCreateNote(priority: NotePriority): SaveResult {
         val output = audioRecorder.stop(MIN_RECORDING_MS)
         val noteId = UUID.randomUUID().toString()
         var exportError: String? = null
@@ -63,52 +63,98 @@ class VoiceNoteProcessor(
             null
         }
 
-        var note = noteRepository.createVoiceNote(
+        val note = noteRepository.createVoiceNote(
             noteId = noteId,
             audioPath = output.path,
             audioFormat = output.format,
             priority = priority,
             audioPublicUri = publicUri,
         )
+        return SaveResult(note, RemoteStatus.LOCAL_ONLY, exportError = exportError)
+    }
+
+    /**
+     * 慢速路径：relay upload + 豆包 submit/query + AI 分析。调用方必须在
+     * 后台 scope 里跑，不应阻塞 UI。返回最终的 SaveResult 用于 snackbar 文案。
+     */
+    suspend fun processNoteInBackground(
+        noteId: String,
+        relayConfig: RelayConfig,
+        volcengineConfig: VolcengineConfig,
+        wifiOnly: Boolean,
+    ): SaveResult {
+        val startNote = noteRepository.getNote(noteId)
+            ?: throw IllegalStateException("note $noteId 不存在，无法继续后台处理。")
 
         if (!relayConfig.enabled) {
-            return SaveResult(note, RemoteStatus.LOCAL_ONLY, exportError = exportError)
+            return SaveResult(startNote, RemoteStatus.LOCAL_ONLY)
         }
 
+        val audioPath = startNote.audioPath
+            ?: return SaveResult(startNote, RemoteStatus.LOCAL_ONLY)
+
+        var note = startNote
         try {
-            val upload = relayStorageClient.upload(File(output.path), relayConfig)
+            val upload = relayStorageClient.upload(File(audioPath), relayConfig)
             note = noteRepository.attachRelayInfo(note, upload.fileId, upload.url, upload.expiresAt)
         } catch (error: Exception) {
-            noteRepository.markTranscriptionFailed(note.id, "Relay upload failed: ${error.message ?: "unknown"}")
+            val detail = (error.message ?: "unknown").take(160)
+            noteRepository.markTranscriptionFailed(note.id, "Relay upload failed: $detail")
+            AppLogger.error("YDOC_RELAY", "upload failed for note=${note.id}", error)
             val refreshed = noteRepository.getNote(note.id) ?: note
             return SaveResult(
                 note = refreshed,
                 remoteStatus = RemoteStatus.REMOTE_FAILED,
-                exportError = exportError,
-                remoteError = "上传失败，请稍后重试。",
+                remoteError = "上传失败：$detail",
             )
         }
 
         if (!volcengineConfig.enabled || note.relayUrl.isNullOrBlank()) {
-            return SaveResult(note, RemoteStatus.RELAY_UPLOADED, exportError = exportError)
+            return SaveResult(note, RemoteStatus.RELAY_UPLOADED)
         }
 
         var remoteStatus = RemoteStatus.TRANSCRIPTION_REQUESTED
         var remoteError: String? = null
         runCatching {
             transcriptionOrchestrator.transcribe(note, volcengineConfig, relayConfig)
-        }.onFailure {
+        }.onFailure { e ->
             transcriptionScheduler.enqueueRetry(note.id, wifiOnly)
             remoteStatus = RemoteStatus.REMOTE_FAILED
-            remoteError = "转写失败，已加入重试队列。"
+            val detail = (e.message ?: "unknown error").take(200)
+            val audioUrlLine = note.relayUrl?.takeIf { it.isNotBlank() }?.let { "\n音频URL：$it" }.orEmpty()
+            remoteError = "转写失败：$detail$audioUrlLine\n已加入重试队列。"
+            AppLogger.error("YDOC_VOLC", "transcribe failed for note=${note.id} url=${note.relayUrl}", e)
         }
         val refreshed = noteRepository.getNote(note.id) ?: note
         return SaveResult(
             note = refreshed,
             remoteStatus = remoteStatus,
-            exportError = exportError,
             remoteError = remoteError,
         )
+    }
+
+    /**
+     * 保留给仍然想串行完整处理的调用方（比如悬浮窗以外）。
+     * 本质就是快速路径 + 慢速路径串联。
+     */
+    suspend fun stopAndSave(
+        priority: NotePriority,
+        relayConfig: RelayConfig,
+        volcengineConfig: VolcengineConfig,
+        wifiOnly: Boolean,
+    ): SaveResult {
+        val created = stopAndCreateNote(priority)
+        if (created.remoteStatus == RemoteStatus.REMOTE_FAILED || !relayConfig.enabled) {
+            return created
+        }
+        val processed = processNoteInBackground(
+            noteId = created.note.id,
+            relayConfig = relayConfig,
+            volcengineConfig = volcengineConfig,
+            wifiOnly = wifiOnly,
+        )
+        // 合并两阶段的 exportError（来自 stopAndCreateNote）
+        return processed.copy(exportError = created.exportError)
     }
 
     companion object {

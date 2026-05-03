@@ -1,5 +1,6 @@
 package com.ydoc.app.transcription
 
+import com.ydoc.app.logging.AppLogger
 import com.ydoc.app.model.VolcengineConfig
 import java.util.UUID
 import kotlinx.serialization.SerialName
@@ -50,11 +51,20 @@ class VolcengineTranscriptionClient(
             .header("X-Api-Sequence", "-1")
             .build()
 
+        AppLogger.volc("submit req=$requestId audio_url=$audioUrl")
         httpClient.newCall(request).execute().use { response ->
             val statusCode = response.header("X-Api-Status-Code")
             val message = response.header("X-Api-Message")
-            check(response.isSuccessful) { "Volcengine submit failed: HTTP ${response.code}" }
-            check(statusCode == "20000000") { "Volcengine submit failed: $statusCode $message" }
+            val bodyPreview = runCatching { response.peekBody(200).string() }.getOrDefault("")
+            AppLogger.volc(
+                "submit req=$requestId -> HTTP ${response.code} / X-Api-Status-Code=$statusCode / X-Api-Message=$message / body=${bodyPreview.take(160)}",
+            )
+            if (!response.isSuccessful) {
+                error("Volcengine submit failed: HTTP ${response.code} / X-Api-Status-Code=$statusCode / message=$message")
+            }
+            if (statusCode != "20000000") {
+                error("Volcengine submit failed: HTTP ${response.code} / X-Api-Status-Code=$statusCode / message=$message")
+            }
             return SubmitResult(requestId = requestId)
         }
     }
@@ -75,18 +85,25 @@ class VolcengineTranscriptionClient(
         httpClient.newCall(request).execute().use { response ->
             val statusCode = response.header("X-Api-Status-Code")
             val message = response.header("X-Api-Message")
-            check(response.isSuccessful) { "Volcengine query failed: HTTP ${response.code}" }
             val responseBody = response.body?.string().orEmpty()
+            AppLogger.volc(
+                "query req=$requestId -> HTTP ${response.code} / X-Api-Status-Code=$statusCode / X-Api-Message=$message / body=${responseBody.take(160)}",
+            )
+            if (!response.isSuccessful) {
+                error("Volcengine query failed: HTTP ${response.code} / X-Api-Status-Code=$statusCode / message=$message")
+            }
             if (statusCode == "20000000") {
                 val payload = json.decodeFromString(QueryResponse.serializer(), responseBody)
                 val text = payload.result?.text.orEmpty()
-                check(text.isNotBlank()) { "Volcengine query returned empty text" }
+                if (text.isBlank()) {
+                    error("Volcengine query returned empty text (req=$requestId)")
+                }
                 return QueryResult(ready = true, text = text)
             }
             if (message == "PROCESSING" || statusCode == "20000001") {
                 return QueryResult(ready = false, text = null)
             }
-            error("Volcengine query failed: $statusCode $message")
+            error("Volcengine query failed: HTTP ${response.code} / X-Api-Status-Code=$statusCode / message=$message")
         }
     }
 

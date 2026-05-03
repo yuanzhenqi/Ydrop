@@ -91,6 +91,17 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
+    // 链接预览卡片加载 og:image
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // 图片附件：本地 OCR（中英文双识别器）+ await() 扩展让 Task 能 suspend
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+
+    // 读取 JPEG EXIF Orientation，导入时按方向旋转像素（避免 "相机横拍显示成正的，导入后变倒"）
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
