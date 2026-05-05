@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -69,6 +70,11 @@ def render(note: dict[str, Any]) -> str:
         lines.append(f'relayUrl: "{note["relay_url"]}"')
     if note.get("sync_error"):
         lines.append(f'syncError: "{note["sync_error"][:120]}"')
+    # attachments 跨端同步（A+ 方案）：图片元数据（含 remoteUrl）写进 frontmatter，
+    # 让 Android / Web 互相看到对方上传的图。OCR 文本太大不带；description/keywords 等 ≤1KB 可控。
+    serialized_atts = _serialize_attachments_for_frontmatter(note.get("attachments", []))
+    if serialized_atts:
+        lines.append(f"attachments: {serialized_atts}")
     lines.append("---")
     lines.append("")
 
@@ -94,6 +100,68 @@ def render(note: dict[str, Any]) -> str:
         lines.append(content)
 
     return "\n".join(lines) + "\n"
+
+
+def _serialize_attachments_for_frontmatter(attachments: list) -> str:
+    """把 attachments 列表序列化成 JSON 单行字符串塞进 frontmatter。
+
+    跳过没 remoteUrl 的项（纯本地的 attachment 跨同步意义不大），ocrText 不带（太长）。
+    与 Android MarkdownFormatter.kt 同形态：单行 JSON、camelCase 字段名。
+    """
+    if not attachments:
+        return ""
+    out = []
+    for a in attachments:
+        if not isinstance(a, dict):
+            # 也支持 Pydantic AttachmentItem
+            try:
+                a = a.model_dump()
+            except Exception:
+                continue
+        # 跨同步必须有 remoteUrl，否则跳过——本地 attachment 跨端不可用
+        remote_url = a.get("remote_url") or a.get("remoteUrl") or ""
+        if not remote_url:
+            continue
+        out.append({
+            "id": a.get("id", ""),
+            "type": a.get("type", "IMAGE"),
+            "remoteUrl": remote_url,
+            "description": (a.get("description") or "")[:600],
+            "keywords": list(a.get("keywords") or [])[:10],
+            "actionableItems": list(a.get("actionable_items") or a.get("actionableItems") or [])[:10],
+            "dates": list(a.get("dates") or [])[:10],
+            "createdAt": a.get("created_at") or a.get("createdAt") or 0,
+        })
+    if not out:
+        return ""
+    return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+
+
+def _parse_attachments_from_frontmatter(value: str | None) -> list[dict]:
+    """解析 frontmatter 里 attachments 字段；camelCase → snake_case 兼容 SQLite 列。"""
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            out.append({
+                "id": item.get("id", ""),
+                "type": item.get("type", "IMAGE"),
+                "remote_url": item.get("remoteUrl") or item.get("remote_url") or "",
+                "description": item.get("description", ""),
+                "keywords": list(item.get("keywords") or []),
+                "actionable_items": list(item.get("actionableItems") or item.get("actionable_items") or []),
+                "dates": list(item.get("dates") or []),
+                "created_at": item.get("createdAt") or item.get("created_at") or 0,
+            })
+        return out
+    except Exception:
+        return []
 
 
 def file_name(note: dict[str, Any]) -> str:
@@ -265,4 +333,5 @@ def parse_from_markdown(content: str, remote_path: str = "") -> dict[str, Any] |
         "audio_path": fm.get("audioPath"),
         "relay_url": fm.get("relayUrl"),
         "transcription_status": (fm.get("transcriptionStatus") or "not_started").upper(),
+        "attachments": _parse_attachments_from_frontmatter(fm.get("attachments")),
     }

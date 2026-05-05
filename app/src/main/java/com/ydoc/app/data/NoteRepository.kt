@@ -378,6 +378,16 @@ class NoteRepository(
     suspend fun upsertFromRemote(note: Note) {
         val existing = noteDao.getById(note.id)?.toModel()
         if (existing != null) {
+            // attachments 跨端同步合并策略（A+ 方案）：
+            // - 远端带过来的 attachments（含 remoteUrl）覆盖同 id 的本地条目，让 localPath 留空但 remoteUrl 可用；
+            // - 本地有但远端没的 attachment（一般是还没上传完的）保留——下次本端 push 时会重新写进 frontmatter。
+            val mergedAttachments = if (note.attachments.isEmpty() && existing.attachments.isEmpty()) {
+                emptyList()
+            } else {
+                val remoteIds = note.attachments.map { it.id }.toSet()
+                val localOnly = existing.attachments.filter { it.id !in remoteIds }
+                note.attachments + localOnly
+            }
             val merged = existing.copy(
                 title = note.title,
                 content = note.content,
@@ -402,6 +412,7 @@ class NoteRepository(
                 archivedAt = note.archivedAt,
                 isTrashed = false,
                 trashedAt = null,
+                attachments = mergedAttachments,
             )
             noteDao.upsert(merged.toEntity())
         } else {

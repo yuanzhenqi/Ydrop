@@ -1,6 +1,7 @@
 package com.ydoc.app.data
 
 import com.ydoc.app.model.Note
+import com.ydoc.app.model.NoteAttachment
 import com.ydoc.app.model.NoteCategory
 import com.ydoc.app.model.NoteColorToken
 import com.ydoc.app.model.NotePriority
@@ -12,8 +13,21 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 
 class MarkdownFormatter {
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
     private val fileDateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.CHINA).apply {
         timeZone = TimeZone.getDefault()
     }
@@ -65,6 +79,10 @@ class MarkdownFormatter {
         note.audioPath?.let { appendLine("audioPath: \"${it.replace("\\\\", "/")}\"") }
         note.relayUrl?.let { appendLine("relayUrl: \"$it\"") }
         note.syncError?.let { appendLine("syncError: \"${it.take(120)}\"") }
+        // attachments 跨端同步（A+ 方案）：仅带 remoteUrl 非空的项；ocrText 太大不带；
+        // description 截 600 字。Web 端从 frontmatter 解出来后能直接看到 Android 上传的图。
+        val attachmentsLine = serializeAttachmentsForFrontmatter(note.attachments)
+        if (attachmentsLine.isNotEmpty()) appendLine("attachments: $attachmentsLine")
         appendLine("---")
         appendLine()
 
@@ -101,6 +119,7 @@ class MarkdownFormatter {
         val priority = parsePriority(frontmatter["priority"])
         val isArchived = parseArchived(frontmatter["archived"], remotePath)
         val tags = frontmatter["tags"]?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+        val attachments = parseAttachmentsFromFrontmatter(frontmatter["attachments"])
         val title = extractTitle(content)
         val body = extractBody(content)
         val isVoice = source == NoteSource.VOICE
@@ -138,7 +157,66 @@ class MarkdownFormatter {
             isTrashed = false,
             trashedAt = null,
             tags = tags,
+            attachments = attachments,
         )
+    }
+
+    /** 把 attachments 序列化成单行 JSON 字符串，可直接拼到 frontmatter 行。
+     *  跳过没 remoteUrl 的项（纯本地附件跨同步意义不大）。 */
+    private fun serializeAttachmentsForFrontmatter(attachments: List<NoteAttachment>): String {
+        val items = attachments.mapNotNull { att ->
+            val url = att.remoteUrl?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val parsedStruct = runCatching { json.parseToJsonElement(att.aiStructuredJson).jsonObject }.getOrNull()
+            val keywords = parsedStruct?.get("keywords")?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val actionable = parsedStruct?.get("actionable_items")?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val dates = parsedStruct?.get("dates")?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            buildJsonObject {
+                put("id", JsonPrimitive(att.id))
+                put("type", JsonPrimitive(att.type))
+                put("remoteUrl", JsonPrimitive(url))
+                if (att.aiDescription.isNotBlank()) put("description", JsonPrimitive(att.aiDescription.take(600)))
+                if (keywords.isNotEmpty()) put("keywords", buildJsonArray { keywords.take(10).forEach { add(JsonPrimitive(it)) } })
+                if (actionable.isNotEmpty()) put("actionableItems", buildJsonArray { actionable.take(10).forEach { add(JsonPrimitive(it)) } })
+                if (dates.isNotEmpty()) put("dates", buildJsonArray { dates.take(10).forEach { add(JsonPrimitive(it)) } })
+                put("createdAt", JsonPrimitive(att.createdAt))
+            }
+        }
+        if (items.isEmpty()) return ""
+        return json.encodeToString(JsonArray.serializer(), JsonArray(items))
+    }
+
+    /** 从 frontmatter 单行 JSON 解出 attachments；localPath 留空（拉下来的图本地没文件）。 */
+    private fun parseAttachmentsFromFrontmatter(value: String?): List<NoteAttachment> {
+        if (value.isNullOrBlank()) return emptyList()
+        val arr = runCatching { json.parseToJsonElement(value).jsonArray }.getOrNull() ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val obj = runCatching { el.jsonObject }.getOrNull() ?: return@mapNotNull null
+            val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val remoteUrl = obj["remoteUrl"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: "IMAGE"
+            val description = obj["description"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val keywords = obj["keywords"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val actionable = obj["actionableItems"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val dates = obj["dates"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val createdAt = obj["createdAt"]?.jsonPrimitive?.longOrNull ?: 0L
+            // 重新装回 aiStructuredJson 字段，保持本地数据形态一致
+            val structJson = buildJsonObject {
+                put("keywords", buildJsonArray { keywords.forEach { add(JsonPrimitive(it)) } })
+                put("actionable_items", buildJsonArray { actionable.forEach { add(JsonPrimitive(it)) } })
+                put("dates", buildJsonArray { dates.forEach { add(JsonPrimitive(it)) } })
+            }
+            NoteAttachment(
+                id = id,
+                type = type,
+                localPath = "",  // 远端拉下来的没有本地文件，UI 用 remoteUrl 加载（NoteAttachmentRow 已处理 fallback）
+                publicUri = null,
+                remoteUrl = remoteUrl,
+                aiDescription = description,
+                aiStructuredJson = json.encodeToString(JsonObject.serializer(), structJson),
+                analyzedAt = if (description.isNotBlank() || keywords.isNotEmpty()) System.currentTimeMillis() else 0L,
+                createdAt = createdAt.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            )
+        }
     }
 
     private fun parseFrontmatter(content: String): Map<String, String>? {

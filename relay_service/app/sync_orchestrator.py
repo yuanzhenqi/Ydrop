@@ -108,6 +108,14 @@ async def sync_bidirectional() -> dict:
                 http_last_mod = rfi.last_modified or 0
                 local_tags = json.loads(local["tags_json"] or "[]")
 
+                # 比较 attachments 是否有变化：用 ID 集合对比，比较轻量。
+                remote_att_ids = sorted(a.get("id", "") for a in (remote_note.get("attachments") or []) if a.get("id"))
+                try:
+                    local_att_list = json.loads(local["attachments_json"] or "[]") if "attachments_json" in local.keys() else []
+                except Exception:
+                    local_att_list = []
+                local_att_ids = sorted(a.get("id", "") for a in local_att_list if isinstance(a, dict) and a.get("id"))
+
                 remote_changed = (
                     remote_note["content"] != local["content"]
                     or remote_note["title"] != local["title"]
@@ -117,6 +125,7 @@ async def sync_bidirectional() -> dict:
                     or remote_note["is_archived"] != bool(local["is_archived"])
                     or rfi.path != local["remote_path"]
                     or sorted(remote_note.get("tags", [])) != sorted(local_tags)
+                    or remote_att_ids != local_att_ids
                 )
 
                 local_has_unsynced_changes = local["status"] in ("LOCAL_ONLY", "FAILED")
@@ -269,14 +278,17 @@ async def delete_remote_by_id(note_id: str) -> bool:
 async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
     now = int(time.time() * 1000)
     tags_json = json.dumps(note.get("tags", []), ensure_ascii=False)
+    # A+ 方案：从 frontmatter 解析出来的 attachments 写入本地 attachments_json，
+    # 让 web 看到 Android 上传的图（前提是 Android 端先把图上传到了 relay 拿到 remoteUrl）。
+    attachments_json = json.dumps(note.get("attachments") or [], ensure_ascii=False)
 
     await db.execute(
         """INSERT OR REPLACE INTO notes
            (id, title, content, source, category, priority, color_token, status,
             created_at, updated_at, last_synced_at, remote_path, last_pulled_at,
             is_archived, archived_at, is_trashed, trashed_at, tags_json,
-            transcript, audio_path, relay_url, transcription_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)""",
+            transcript, audio_path, relay_url, transcription_status, attachments_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'SYNCED', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)""",
         [
             note["id"], note["title"], note["content"], note["source"],
             note["category"], note["priority"], note["color_token"],
@@ -284,6 +296,7 @@ async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
             1 if note["is_archived"] else 0, note.get("archived_at"),
             tags_json, note.get("transcript"), note.get("audio_path"),
             note.get("relay_url"), note.get("transcription_status", "NOT_STARTED"),
+            attachments_json,
         ],
     )
 
@@ -325,6 +338,17 @@ async def _push_note(db, client: WebDavClient, local_row) -> bool:
 
 
 def _row_to_dict(row) -> dict:
+    # attachments_json 是新列（A+ 方案），老 DB 的 row 可能没这字段
+    keys = row.keys() if hasattr(row, "keys") else []
+    attachments_json = row["attachments_json"] if "attachments_json" in keys else None
+    attachments: list = []
+    if attachments_json:
+        try:
+            raw = json.loads(attachments_json)
+            if isinstance(raw, list):
+                attachments = [a for a in raw if isinstance(a, dict)]
+        except Exception:
+            attachments = []
     return {
         "id": row["id"],
         "title": row["title"],
@@ -344,6 +368,7 @@ def _row_to_dict(row) -> dict:
         "relay_url": row["relay_url"],
         "sync_error": row["sync_error"],
         "transcription_status": row["transcription_status"] or "NOT_STARTED",
+        "attachments": attachments,
     }
 
 
