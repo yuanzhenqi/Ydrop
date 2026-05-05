@@ -86,6 +86,7 @@ class AiAnalyzeResponse(BaseModel):
     suggestedTitle: str | None = None
     suggestedCategory: str | None = None
     suggestedPriority: str | None = None
+    suggestedTags: list[str] = Field(default_factory=list)
     todoItems: list[str] = Field(default_factory=list)
     extractedEntities: list[ExtractedEntityResponse] = Field(default_factory=list)
     reminderCandidates: list[ReminderCandidateResponse] = Field(default_factory=list)
@@ -96,6 +97,7 @@ class AiAnalyzeResponse(BaseModel):
             and not (self.suggestedTitle or "").strip()
             and not (self.suggestedCategory or "").strip()
             and not (self.suggestedPriority or "").strip()
+            and not self.suggestedTags
             and not self.todoItems
             and not self.extractedEntities
             and not self.reminderCandidates

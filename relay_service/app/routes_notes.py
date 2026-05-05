@@ -264,6 +264,46 @@ async def restore_note(note_id: str):
     return _row_to_note(rows[0])
 
 
+@router.post("/{note_id}/restore-original", response_model=NoteResponse)
+async def restore_original_content(note_id: str):
+    """把笔记内容还原到 AI 整理前的 original_content。
+
+    语义对齐 Android 端 AppViewModel.restoreOriginalContent：
+    - 仅 content 回滚到 original_content；
+    - original_content 清空（一次性还原）；
+    - title / category / priority / color_token / tags 不动（apply 之后用户可能手改过这些字段）；
+    - 关联的 AI suggestion 状态打回 DISMISSED，便于用户后续重整。
+    """
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT original_content FROM notes WHERE id = ?", [note_id]
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Note not found")
+    original = rows[0]["original_content"]
+    if not original or not original.strip():
+        raise HTTPException(status_code=400, detail="这条便签没有可还原的原内容。")
+
+    now = int(time.time() * 1000)
+    cursor = await db.execute(
+        """UPDATE notes
+           SET content = ?, original_content = NULL, updated_at = ?, status = 'LOCAL_ONLY',
+               last_synced_at = NULL, sync_error = NULL
+           WHERE id = ?""",
+        [original, now, note_id],
+    )
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Note not found")
+    await db.execute(
+        "UPDATE ai_suggestions SET status = 'DISMISSED', updated_at = ? WHERE note_id = ?",
+        [now, note_id],
+    )
+    await db.commit()
+    _trigger_push(note_id)
+    rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
+    return _row_to_note(rows[0])
+
+
 @router.delete("/{note_id}", status_code=204)
 async def delete_note_permanently(note_id: str):
     db = await get_db()
@@ -343,14 +383,15 @@ async def trigger_ai_analysis(note_id: str, ctx: ClientContext | None = Body(def
         await db.execute(
             """UPDATE ai_suggestions SET
                status = 'READY', summary = ?, suggested_title = ?, suggested_category = ?,
-               suggested_priority = ?, todo_items_json = ?, extracted_entities_json = ?,
-               reminder_candidates_json = ?, updated_at = ?
+               suggested_priority = ?, suggested_tags_json = ?, todo_items_json = ?,
+               extracted_entities_json = ?, reminder_candidates_json = ?, updated_at = ?
                WHERE id = ?""",
             [
                 result.summary,
                 result.suggestedTitle,
                 result.suggestedCategory,
                 result.suggestedPriority,
+                json.dumps([t for t in result.suggestedTags], ensure_ascii=False),
                 json.dumps([t for t in result.todoItems], ensure_ascii=False),
                 json.dumps([e.model_dump() for e in result.extractedEntities], ensure_ascii=False),
                 json.dumps([r.model_dump() for r in result.reminderCandidates], ensure_ascii=False),
@@ -380,6 +421,9 @@ async def get_suggestions(note_id: str):
 
 
 def _row_to_suggestion(row) -> AiSuggestionResponse:
+    # 旧 DB 升级时 suggested_tags_json 列可能不存在（_migrate 兜底已加，但读出来仍可能是 None）
+    keys = row.keys() if hasattr(row, "keys") else []
+    suggested_tags_json = row["suggested_tags_json"] if "suggested_tags_json" in keys else None
     return AiSuggestionResponse(
         id=row["id"],
         note_id=row["note_id"],
@@ -388,6 +432,7 @@ def _row_to_suggestion(row) -> AiSuggestionResponse:
         suggested_title=row["suggested_title"],
         suggested_category=row["suggested_category"],
         suggested_priority=row["suggested_priority"],
+        suggested_tags=json.loads(suggested_tags_json or "[]"),
         todo_items=json.loads(row["todo_items_json"] or "[]"),
         extracted_entities=json.loads(row["extracted_entities_json"] or "[]"),
         reminder_candidates=json.loads(row["reminder_candidates_json"] or "[]"),

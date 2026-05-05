@@ -109,6 +109,7 @@ export interface AiSuggestion {
   suggested_title?: string
   suggested_category?: string
   suggested_priority?: string
+  suggested_tags?: string[]
   todo_items: string[]
   extracted_entities: { label: string; value: string }[]
   reminder_candidates: { title: string; scheduledAt: number; reason?: string; scheduledAtIso?: string }[]

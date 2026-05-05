@@ -85,6 +85,7 @@ class AiSuggestionResponse(BaseModel):
     suggested_title: str | None = None
     suggested_category: str | None = None
     suggested_priority: str | None = None
+    suggested_tags: list[str] = Field(default_factory=list)
     todo_items: list[str] = Field(default_factory=list)
     extracted_entities: list[dict] = Field(default_factory=list)
     reminder_candidates: list[dict] = Field(default_factory=list)

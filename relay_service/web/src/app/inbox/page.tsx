@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useNotes } from '@/hooks/useNotes'
 import { useAppStore } from '@/store'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
-import { archiveNote, trashNote, triggerAiAnalysis, fetchSuggestions } from '@/lib/api'
+import { archiveNote, trashNote, triggerAiAnalysis, fetchSuggestions, restoreOriginalContent } from '@/lib/api'
 import type { AiSuggestion } from '@/lib/types'
 import { NoteCard } from '@/components/notes/NoteCard'
 import { QuickCapture } from '@/components/notes/QuickCapture'
@@ -199,6 +199,18 @@ export default function InboxPage() {
                     }
                   }}
                   onAiAnalyze={handleAiAnalyze}
+                  onRestoreOriginal={(id) =>
+                    handleAction(async () => {
+                      await restoreOriginalContent(id)
+                      // 还原后清空本地 suggestion 缓存，下次拉重新加载
+                      setSuggestionsMap((prev) => {
+                        const next = { ...prev }
+                        delete next[id]
+                        return next
+                      })
+                      toast('success', '已还原为原内容')
+                    })
+                  }
                 />
               ))}
             </div>

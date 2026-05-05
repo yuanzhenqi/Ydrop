@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS ai_suggestions (
     suggested_title TEXT,
     suggested_category TEXT,
     suggested_priority TEXT,
+    suggested_tags_json TEXT DEFAULT '[]',
     todo_items_json TEXT DEFAULT '[]',
     extracted_entities_json TEXT DEFAULT '[]',
     reminder_candidates_json TEXT DEFAULT '[]',
@@ -138,6 +139,12 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     cols = {row[1] for row in await cur.fetchall()}
     if "recurrence" not in cols:
         await db.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT")
+
+    # ai_suggestions.suggested_tags_json (Web 对齐 Android v1.0.0+ 的 AI 标签建议)
+    cur = await db.execute("PRAGMA table_info(ai_suggestions)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "suggested_tags_json" not in cols:
+        await db.execute("ALTER TABLE ai_suggestions ADD COLUMN suggested_tags_json TEXT DEFAULT '[]'")
 
 
 async def close_db() -> None:

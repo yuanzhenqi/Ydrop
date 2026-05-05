@@ -5,7 +5,7 @@ import type { Note, AiSuggestion } from '@/lib/types'
 import { COLOR_MAP, CATEGORY_LABELS, PRIORITY_LABELS } from '@/lib/constants'
 import { formatTime } from '@/lib/date'
 import { MarkdownView } from '@/components/common/MarkdownView'
-import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp, Loader2, Undo2 } from 'lucide-react'
 import { ReminderCandidateList } from '@/components/reminders/ReminderCandidateList'
 
 interface NoteCardProps {
@@ -22,11 +22,19 @@ interface NoteCardProps {
   onDelete?: (id: string) => void
   onCopy: (id: string) => void
   onAiAnalyze?: (id: string) => void
+  onRestoreOriginal?: (id: string) => void
 }
 
-export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze }: NoteCardProps) {
+export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze, onRestoreOriginal }: NoteCardProps) {
   const [expanded, setExpanded] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false)
   const color = COLOR_MAP[note.color_token] || COLOR_MAP.SAGE
+  // 仅当 original_content 非空且与当前 content 不同才显示还原入口
+  const hasOriginal =
+    !!note.original_content &&
+    !!note.original_content.trim() &&
+    note.original_content.trim() !== (note.content || '').trim()
 
   const hasSuggestion = suggestion && suggestion.status === 'READY'
   const aiStatus = aiLoading ? 'running' : hasSuggestion ? 'ready' : suggestion?.status === 'FAILED' ? 'failed' : 'idle'
@@ -100,6 +108,19 @@ export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdi
                     {suggestion!.todo_items.slice(0, 3).join('；')}
                   </div>
                 )}
+                {suggestion!.suggested_tags && suggestion!.suggested_tags.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                    <span className="text-purple-600">建议标签：</span>
+                    {suggestion!.suggested_tags.slice(0, 6).map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-[11px] px-1.5 py-0.5 rounded-full bg-white/70 text-purple-700 border border-purple-200"
+                      >
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {/* AI 提醒候选 */}
@@ -109,6 +130,74 @@ export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdi
             {suggestion?.status === 'FAILED' && (
               <div className="text-xs text-red-600 bg-red-50 px-2 py-1 rounded">
                 AI 整理失败：{suggestion.error_message || '未知错误'}
+              </div>
+            )}
+
+            {/* 原内容（AI 整理前的版本）+ 还原入口。对齐 Android v1.1.0 K #3。 */}
+            {hasOriginal && (
+              <div className="text-xs space-y-1.5 pt-1">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowOriginal((v) => !v)}
+                    className="text-emerald-700 hover:underline"
+                  >
+                    {showOriginal ? '隐藏原内容' : '查看原内容'}
+                  </button>
+                  {onRestoreOriginal && (
+                    <button
+                      onClick={() => setShowRestoreConfirm(true)}
+                      className="text-red-600 hover:underline inline-flex items-center gap-1"
+                    >
+                      <Undo2 className="w-3 h-3" /> 还原为原内容
+                    </button>
+                  )}
+                </div>
+                {showOriginal && (
+                  <div
+                    className="rounded-lg px-3 py-2 text-gray-600"
+                    style={{ backgroundColor: color.bg }}
+                  >
+                    <div className="text-[11px] font-semibold mb-1" style={{ color: color.text }}>
+                      原内容
+                    </div>
+                    <p className="whitespace-pre-wrap break-words">{note.original_content}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 还原确认对话框 */}
+            {showRestoreConfirm && onRestoreOriginal && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+                onClick={() => setShowRestoreConfirm(false)}
+              >
+                <div
+                  className="bg-white rounded-2xl shadow-xl p-5 max-w-sm w-full space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="text-base font-semibold text-gray-900">还原为原内容？</div>
+                  <p className="text-sm text-gray-600 leading-relaxed">
+                    当前 AI 整理后的正文会被原内容覆盖；标题、分类、优先级、标签保留不变。还原后无法撤销。
+                  </p>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      onClick={() => setShowRestoreConfirm(false)}
+                      className="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-50"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowRestoreConfirm(false)
+                        onRestoreOriginal(note.id)
+                      }}
+                      className="px-4 py-1.5 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600"
+                    >
+                      还原
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 

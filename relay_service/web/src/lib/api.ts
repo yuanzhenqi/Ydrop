@@ -86,6 +86,16 @@ export async function fetchSuggestions(noteId: string): Promise<AiSuggestion[]> 
   return request<AiSuggestion[]>(`/api/notes/${noteId}/suggestions`)
 }
 
+/**
+ * 把笔记内容还原到 AI 整理前的 original_content。语义对齐 Android v1.1.0 K #3：
+ * - 仅 content 回滚；title / category / priority / color_token / tags 保留；
+ * - original_content 清空（一次性还原），后续再触发 AI 整理会重新备份；
+ * - 关联的 AiSuggestion 状态打回 DISMISSED。
+ */
+export async function restoreOriginalContent(noteId: string): Promise<Note> {
+  return request<Note>(`/api/notes/${noteId}/restore-original`, { method: 'POST' })
+}
+
 // ── Reminders ──
 
 export async function fetchReminders(params: Record<string, string> = {}): Promise<ReminderListResponse> {
@@ -129,9 +139,17 @@ export interface ChatResponse {
 }
 
 export async function aiChat(messages: ChatMessage[], filter?: ChatFilter, sessionId?: string | null): Promise<ChatResponse> {
+  // 客户端当前时间锚点：让 LLM 能解析"今天 / 本周 / 最近 N 天"等中文相对时间。
+  // 不传时 server fallback 到 UTC，对中文相对时间解析会偏一天。Android 端走 AgentRepository 已经对齐，这里把 web 也补上。
+  const ctx = getClientTimeContext()
   return request<ChatResponse>('/api/ai/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages, filter, session_id: sessionId || null }),
+    body: JSON.stringify({
+      messages,
+      filter,
+      session_id: sessionId || null,
+      ...ctx,
+    }),
   })
 }
 

@@ -28,3 +28,4 @@ relay_service/web/.next/
 relay_service/web/out/
 relay_service/web/node_modules/
 relay_service/web/next-env.d.ts
+relay_service/web/tsconfig.tsbuildinfo

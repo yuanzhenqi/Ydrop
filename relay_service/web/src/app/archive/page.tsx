@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useNotes } from '@/hooks/useNotes'
-import { unarchiveNote, trashNote } from '@/lib/api'
+import { unarchiveNote, trashNote, restoreOriginalContent } from '@/lib/api'
 import { NoteCard } from '@/components/notes/NoteCard'
 import { Archive } from 'lucide-react'
 
@@ -40,6 +40,7 @@ export default function ArchivePage() {
                 const n = notes.find((n) => n.id === id)
                 if (n) navigator.clipboard.writeText(n.content)
               }}
+              onRestoreOriginal={(id) => handleAction(() => restoreOriginalContent(id))}
             />
           ))}
         </div>
