@@ -15,6 +15,27 @@ export interface LinkPreview {
   error?: string | null
 }
 
+export interface Attachment {
+  id: string
+  type: string  // 目前固定 'IMAGE'
+  remote_url: string
+  description: string
+  keywords: string[]
+  actionable_items: string[]
+  dates: string[]
+  error?: string | null
+  created_at: number
+}
+
+export interface ImageAnalyzeResponse {
+  remote_url: string
+  description: string
+  keywords: string[]
+  actionable_items: string[]
+  dates: string[]
+  error?: string | null
+}
+
 export interface Note {
   id: string
   title: string
@@ -41,6 +62,7 @@ export interface Note {
   relay_url?: string
   transcription_status: string
   link_previews?: LinkPreview[]
+  attachments?: Attachment[]
 }
 
 export interface NoteListResponse {

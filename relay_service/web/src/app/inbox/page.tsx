@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation'
 import { useNotes } from '@/hooks/useNotes'
 import { useAppStore } from '@/store'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
-import { archiveNote, trashNote, triggerAiAnalysis, fetchSuggestions, restoreOriginalContent } from '@/lib/api'
+import { archiveNote, trashNote, triggerAiAnalysis, fetchSuggestions, restoreOriginalContent, analyzeImage, deleteRemoteImage, updateNote } from '@/lib/api'
+import type { Attachment } from '@/lib/types'
 import type { AiSuggestion } from '@/lib/types'
 import { NoteCard } from '@/components/notes/NoteCard'
 import { QuickCapture } from '@/components/notes/QuickCapture'
@@ -211,6 +212,47 @@ export default function InboxPage() {
                       toast('success', '已还原为原内容')
                     })
                   }
+                  onAttachmentUpload={async (id, file) => {
+                    try {
+                      const target = notes.find((x) => x.id === id)
+                      const hint = target?.title || (target?.content || '').slice(0, 100)
+                      const resp = await analyzeImage(file, id, hint)
+                      const newAtt: Attachment = {
+                        id: crypto.randomUUID(),
+                        type: 'IMAGE',
+                        remote_url: resp.remote_url,
+                        description: resp.description,
+                        keywords: resp.keywords,
+                        actionable_items: resp.actionable_items,
+                        dates: resp.dates,
+                        error: resp.error || null,
+                        created_at: Date.now(),
+                      }
+                      const merged = [...(target?.attachments || []), newAtt]
+                      await updateNote(id, { attachments: merged })
+                      mutate()
+                      toast('success', resp.error ? `已上传（${resp.error}）` : 'AI 已识别图片')
+                    } catch (e: unknown) {
+                      const msg = e instanceof Error ? e.message : '上传失败'
+                      toast('error', msg)
+                    }
+                  }}
+                  onAttachmentRemove={async (id, attachmentId) => {
+                    try {
+                      const target = notes.find((x) => x.id === id)
+                      const removed = target?.attachments?.find((a) => a.id === attachmentId)
+                      const remaining = (target?.attachments || []).filter((a) => a.id !== attachmentId)
+                      await updateNote(id, { attachments: remaining })
+                      // best-effort 删服务端文件，不影响 UI 更新
+                      if (removed?.remote_url) {
+                        deleteRemoteImage(removed.remote_url).catch(() => {})
+                      }
+                      mutate()
+                    } catch (e: unknown) {
+                      const msg = e instanceof Error ? e.message : '删除失败'
+                      toast('error', msg)
+                    }
+                  }}
                 />
               ))}
             </div>

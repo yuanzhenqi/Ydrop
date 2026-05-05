@@ -8,6 +8,7 @@ import { MarkdownView } from '@/components/common/MarkdownView'
 import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp, Loader2, Undo2 } from 'lucide-react'
 import { ReminderCandidateList } from '@/components/reminders/ReminderCandidateList'
 import { LinkPreviewCard } from '@/components/notes/LinkPreviewCard'
+import { NoteAttachmentRow } from '@/components/notes/NoteAttachmentRow'
 
 interface NoteCardProps {
   note: Note
@@ -24,9 +25,11 @@ interface NoteCardProps {
   onCopy: (id: string) => void
   onAiAnalyze?: (id: string) => void
   onRestoreOriginal?: (id: string) => void
+  onAttachmentUpload?: (id: string, file: File) => Promise<void>
+  onAttachmentRemove?: (id: string, attachmentId: string) => Promise<void>
 }
 
-export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze, onRestoreOriginal }: NoteCardProps) {
+export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdit, onArchive, onUnarchive, onTrash, onRestore, onDelete, onCopy, onAiAnalyze, onRestoreOriginal, onAttachmentUpload, onAttachmentRemove }: NoteCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false)
@@ -133,6 +136,23 @@ export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdi
                 AI 整理失败：{suggestion.error_message || '未知错误'}
               </div>
             )}
+
+            {/* 图片附件（J Phase 2 A 方案对齐）。展开态横滚缩略图 + 「+ 加图」上传 + 「i」看 AI 描述。 */}
+            {(note.attachments && note.attachments.length > 0) || onAttachmentUpload ? (
+              <NoteAttachmentRow
+                attachments={note.attachments || []}
+                onUpload={
+                  onAttachmentUpload && section !== 'trash'
+                    ? (file) => onAttachmentUpload(note.id, file)
+                    : undefined
+                }
+                onRemove={
+                  onAttachmentRemove && section !== 'trash'
+                    ? (attachmentId) => onAttachmentRemove(note.id, attachmentId)
+                    : undefined
+                }
+              />
+            ) : null}
 
             {/* 链接预览卡（J Phase 1 对齐）。relay 后台 worker 在保存后异步抓取，
                 10-30 秒内能看到。失败的 entry 也会渲染（降级 chip 样式）。 */}

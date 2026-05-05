@@ -1,4 +1,4 @@
-import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult } from './types'
+import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse } from './types'
 
 function getToken(): string {
   if (typeof window === 'undefined') return ''
@@ -84,6 +84,37 @@ export async function triggerAiAnalysis(noteId: string): Promise<AiSuggestion> {
 
 export async function fetchSuggestions(noteId: string): Promise<AiSuggestion[]> {
   return request<AiSuggestion[]>(`/api/notes/${noteId}/suggestions`)
+}
+
+// ── Image attachments (Web 端 A 方案：Vision AI 单通道) ──
+
+/** 上传 + 分析图片：multipart 到 /api/images/analyze。返回 remote_url + 结构化描述。
+ * 调用方负责把结果合并进 note.attachments 并 PUT 笔记保存。 */
+export async function analyzeImage(file: File, noteId?: string, hint?: string): Promise<ImageAnalyzeResponse> {
+  const token = getToken()
+  const fd = new FormData()
+  fd.append('file', file)
+  if (noteId) fd.append('note_id', noteId)
+  if (hint) fd.append('hint', hint)
+  const res = await fetch('/api/images/analyze', {
+    method: 'POST',
+    body: fd,
+    // 不设 Content-Type：浏览器会自动加 multipart/form-data 边界
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${body}`)
+  }
+  return res.json()
+}
+
+/** 删除 relay 上的图片副本。从 remote_url 反推 filename（基名最后一段）。
+ * 服务端幂等：文件不存在也 204。 */
+export async function deleteRemoteImage(remoteUrl: string): Promise<void> {
+  const filename = remoteUrl.split('/').pop()
+  if (!filename) return
+  return request<void>(`/api/images/${filename}`, { method: 'DELETE' })
 }
 
 /**

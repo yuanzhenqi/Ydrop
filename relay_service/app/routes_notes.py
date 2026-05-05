@@ -15,6 +15,7 @@ from .markdown_format import default_color_for
 from .models import AiAnalyzeRequest
 from .models_notes import (
     AiSuggestionResponse,
+    AttachmentItem,
     LinkPreviewItem,
     NoteCreate,
     NoteListResponse,
@@ -43,7 +44,7 @@ def _trigger_link_preview(note_id: str) -> None:
 
 
 def _row_to_note(row) -> NoteResponse:
-    # 兼容老 DB 没 link_previews_json 列的情况（_migrate 已加，但读 row 时仍可能 None）
+    # 兼容老 DB 没 link_previews_json / attachments_json 列的情况（_migrate 已加，但读 row 时仍可能 None）
     keys = row.keys() if hasattr(row, "keys") else []
     link_previews_json = row["link_previews_json"] if "link_previews_json" in keys else None
     link_items: list[LinkPreviewItem] = []
@@ -54,6 +55,15 @@ def _row_to_note(row) -> NoteResponse:
                 link_items = [LinkPreviewItem(**item) for item in raw if isinstance(item, dict)]
         except Exception:
             link_items = []
+    attachments_json = row["attachments_json"] if "attachments_json" in keys else None
+    attachment_items: list[AttachmentItem] = []
+    if attachments_json:
+        try:
+            raw = json.loads(attachments_json)
+            if isinstance(raw, list):
+                attachment_items = [AttachmentItem(**item) for item in raw if isinstance(item, dict)]
+        except Exception:
+            attachment_items = []
     return NoteResponse(
         id=row["id"],
         title=row["title"],
@@ -80,6 +90,7 @@ def _row_to_note(row) -> NoteResponse:
         relay_url=row["relay_url"],
         transcription_status=row["transcription_status"] or "NOT_STARTED",
         link_previews=link_items,
+        attachments=attachment_items,
     )
 
 
@@ -208,6 +219,9 @@ async def update_note(note_id: str, body: NoteUpdate):
     if body.tags is not None:
         updates.append("tags_json = ?")
         params.append(json.dumps(body.tags, ensure_ascii=False))
+    if body.attachments is not None:
+        updates.append("attachments_json = ?")
+        params.append(json.dumps([a.model_dump() for a in body.attachments], ensure_ascii=False))
 
     params.append(note_id)
     await db.execute(f"UPDATE notes SET {', '.join(updates)} WHERE id = ?", params)
