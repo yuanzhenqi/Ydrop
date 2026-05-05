@@ -21,6 +21,9 @@ data class AiConfig(
     val autoRunOnTextSave: Boolean = true,
     val autoRunOnVoiceTranscribed: Boolean = true,
     val autoRetryOnTransientFailure: Boolean = true,
+    /** 本地 OCR 开关。关掉后 ImageOcrWorker 跳过 ML Kit 识别，attachment.ocrText 保持空。
+     *  适合不需要 OCR 文字 / 想节省识别开销 / 设备性能弱的用户。默认开。 */
+    val localOcrEnabled: Boolean = true,
 )
 
 enum class AiSuggestionStatus {

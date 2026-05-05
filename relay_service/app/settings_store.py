@@ -196,6 +196,7 @@ async def get_webdav_config() -> dict[str, Any]:
 
 
 async def get_ai_config() -> dict[str, Any]:
+    vision_raw = await get_value("ai.vision_enabled", "bool")
     return {
         "enabled": await get_value("ai.enabled", "bool") if await get_value("ai.enabled", "bool") is not None else False,
         "base_url": await get_value("ai.base_url", "str") or "",
@@ -205,4 +206,6 @@ async def get_ai_config() -> dict[str, Any]:
         "prompt_supplement": await get_value("ai.prompt_supplement", "str") or "",
         "auto_run_on_text_save": await get_value("ai.auto_run_on_text_save", "bool") if await get_value("ai.auto_run_on_text_save", "bool") is not None else True,
         "auto_retry_on_failure": await get_value("ai.auto_retry_on_failure", "bool") if await get_value("ai.auto_retry_on_failure", "bool") is not None else True,
+        # 默认 True（向后兼容）；用户的模型不支持视觉理解时手动关掉。开关影响所有客户端（Web 上传 + Android ImageAnalyzeWorker）。
+        "vision_enabled": vision_raw if vision_raw is not None else True,
     }

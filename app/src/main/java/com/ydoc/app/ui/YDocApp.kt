@@ -264,6 +264,7 @@ fun YDocApp(
         onAiEndpointModeChange = viewModel::updateAiEndpointMode,
         onToggleAi = viewModel::toggleAiEnabled,
         onToggleAiAutoText = viewModel::toggleAiAutoText,
+        onToggleAiLocalOcr = viewModel::toggleAiLocalOcr,
         onToggleAiAutoVoice = viewModel::toggleAiAutoVoice,
         onToggleAiAutoRetry = viewModel::toggleAiAutoRetry,
         onOverlayHandleSizeChange = viewModel::updateOverlayHandleSize,
@@ -359,6 +360,7 @@ private fun YDocScreen(
     onToggleAiAutoText: (Boolean) -> Unit,
     onToggleAiAutoVoice: (Boolean) -> Unit,
     onToggleAiAutoRetry: (Boolean) -> Unit,
+    onToggleAiLocalOcr: (Boolean) -> Unit,
     onOverlayHandleSizeChange: (Int) -> Unit,
     onOverlayHandleAlphaChange: (Float) -> Unit,
     hasOverlayPermission: Boolean,
@@ -570,6 +572,7 @@ private fun YDocScreen(
                         onAiEndpointModeChange = onAiEndpointModeChange,
                         onToggleAi = onToggleAi,
                         onToggleAiAutoText = onToggleAiAutoText,
+                        onToggleAiLocalOcr = onToggleAiLocalOcr,
                         onToggleAiAutoVoice = onToggleAiAutoVoice,
                         onToggleAiAutoRetry = onToggleAiAutoRetry,
                         onOverlayHandleSizeChange = onOverlayHandleSizeChange,
@@ -1478,6 +1481,7 @@ private fun SettingsCardTabbed(
     onToggleAiAutoText: (Boolean) -> Unit,
     onToggleAiAutoVoice: (Boolean) -> Unit,
     onToggleAiAutoRetry: (Boolean) -> Unit,
+    onToggleAiLocalOcr: (Boolean) -> Unit,
     onOverlayHandleSizeChange: (Int) -> Unit,
     onOverlayHandleAlphaChange: (Float) -> Unit,
     hasOverlayPermission: Boolean,
@@ -1545,6 +1549,7 @@ private fun SettingsCardTabbed(
                         onToggleAutoText = onToggleAiAutoText,
                         onToggleAutoVoice = onToggleAiAutoVoice,
                         onToggleAutoRetry = onToggleAiAutoRetry,
+                        onToggleLocalOcr = onToggleAiLocalOcr,
                         onTestAi = onTestAi,
                     )
                 }
@@ -1592,6 +1597,7 @@ private fun AiSettingsSection(
     onToggleAutoText: (Boolean) -> Unit,
     onToggleAutoVoice: (Boolean) -> Unit,
     onToggleAutoRetry: (Boolean) -> Unit,
+    onToggleLocalOcr: (Boolean) -> Unit,
     onTestAi: () -> Unit,
 ) {
     var promptExpanded by remember { mutableStateOf(false) }
@@ -1727,6 +1733,11 @@ private fun AiSettingsSection(
             label = "超时/网络错误自动重试（最多 5 次）",
             checked = config.autoRetryOnTransientFailure,
             onCheckedChange = onToggleAutoRetry,
+        )
+        SettingsToggleRow(
+            label = "本地 OCR（图片附件文字识别）",
+            checked = config.localOcrEnabled,
+            onCheckedChange = onToggleLocalOcr,
         )
         AssistChip(onClick = onTestAi, label = { Text(if (isTesting) "测试中" else "测试 AI 服务") })
     }

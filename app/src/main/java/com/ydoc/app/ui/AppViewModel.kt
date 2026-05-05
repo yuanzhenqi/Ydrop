@@ -1532,6 +1532,16 @@ class AppViewModel(
         )
     }
 
+    fun toggleAiLocalOcr(enabled: Boolean) {
+        val current = _uiState.value.settings
+        _uiState.value = _uiState.value.copy(
+            settings = current.copy(
+                ai = current.ai.copy(localOcrEnabled = enabled),
+                hasUnsavedChanges = true,
+            ),
+        )
+    }
+
     fun toggleWebDavEnabled(enabled: Boolean) {
         val current = _uiState.value.settings
         _uiState.value = _uiState.value.copy(settings = current.copy(webDavEnabled = enabled, hasUnsavedChanges = true))

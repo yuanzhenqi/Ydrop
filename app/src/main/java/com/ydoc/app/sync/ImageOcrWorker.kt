@@ -12,6 +12,7 @@ import com.ydoc.app.appContainer
 import com.ydoc.app.logging.AppLogger
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.flow.first
 
 /**
  * 纯本地 OCR：用 ML Kit bundled 模型扫一遍图片文字，写回 attachment.ocrText。
@@ -35,6 +36,14 @@ class ImageOcrWorker(
             ?: return Result.success()
         if (attachment.ocrText.isNotBlank()) {
             // 已经跑过，幂等跳过
+            return Result.success()
+        }
+        // 用户在设置里关掉本地 OCR 时，跳过 ML Kit 推理。attachment.ocrText 留空，
+        // AI 整理 prompt 不会注入 OCR 文本（IMAGE_CONTEXTS 仅靠 vision 描述）。
+        val ocrEnabled = runCatching { container.settingsStore.settingsFlow.first().ai.localOcrEnabled }
+            .getOrDefault(true)
+        if (!ocrEnabled) {
+            AppLogger.audio("ImageOcrWorker: local OCR disabled in settings, skip $attachmentId")
             return Result.success()
         }
         if (!File(attachment.localPath).exists()) {

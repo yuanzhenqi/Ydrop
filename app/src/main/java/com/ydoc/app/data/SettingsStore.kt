@@ -56,6 +56,7 @@ class SettingsStore(
                 autoRunOnTextSave = prefs[Keys.aiAutoText] ?: true,
                 autoRunOnVoiceTranscribed = prefs[Keys.aiAutoVoice] ?: true,
                 autoRetryOnTransientFailure = prefs[Keys.aiAutoRetry] ?: true,
+                localOcrEnabled = prefs[Keys.localOcrEnabled] ?: true,
             ),
         )
     }
@@ -97,6 +98,7 @@ class SettingsStore(
             prefs[Keys.aiAutoText] = config.autoRunOnTextSave
             prefs[Keys.aiAutoVoice] = config.autoRunOnVoiceTranscribed
             prefs[Keys.aiAutoRetry] = config.autoRetryOnTransientFailure
+            prefs[Keys.localOcrEnabled] = config.localOcrEnabled
             prefs.remove(Keys.aiPrompt)
         }
     }
@@ -146,5 +148,6 @@ class SettingsStore(
         val aiAutoText = booleanPreferencesKey("ai_auto_text")
         val aiAutoVoice = booleanPreferencesKey("ai_auto_voice")
         val aiAutoRetry = booleanPreferencesKey("ai_auto_retry")
+        val localOcrEnabled = booleanPreferencesKey("local_ocr_enabled")
     }
 }

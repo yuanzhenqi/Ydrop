@@ -445,6 +445,13 @@ export default function SettingsPage() {
             onChange={(v) => updateAi('auto_retry_on_failure', v)}
           />
 
+          <SettingsToggle
+            label="启用视觉理解（Vision AI）"
+            description="模型不支持视觉理解时关掉。关闭后图片仍可上传但不会调 vision provider 生成描述/关键词，避免报错。"
+            value={av.vision_enabled ?? true}
+            onChange={(v) => updateAi('vision_enabled', v)}
+          />
+
           <div className="pt-2 border-t">
             <TestButton onTest={testAiConnection} />
           </div>

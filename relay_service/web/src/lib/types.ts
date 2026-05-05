@@ -106,6 +106,8 @@ export interface AiSettings {
   prompt_supplement: string
   auto_run_on_text_save: boolean
   auto_retry_on_failure: boolean
+  /** 视觉理解开关。模型不支持时关掉，图片只存盘不走 vision provider，影响所有客户端。 */
+  vision_enabled: boolean
 }
 
 export interface ServerInfo {

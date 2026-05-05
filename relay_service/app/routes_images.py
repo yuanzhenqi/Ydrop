@@ -70,6 +70,10 @@ async def analyze(
     if not (ai_cfg["enabled"] and ai_cfg["base_url"] and ai_cfg["token"]):
         logger.info("analyze: no provider configured, returning remote_url only note=%s", note_id)
         return ImageAnalyzeResponse(remote_url=remote_url, error="relay 未配 AI provider")
+    if not ai_cfg.get("vision_enabled", True):
+        # 用户模型不支持 vision；只存图返回 URL，不调 vision provider 避免报错。
+        logger.info("analyze: vision_enabled=false, returning remote_url only note=%s", note_id)
+        return ImageAnalyzeResponse(remote_url=remote_url)
 
     try:
         from .ai_provider import call_vision, strip_json_fence

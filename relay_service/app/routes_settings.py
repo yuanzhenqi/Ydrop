@@ -42,6 +42,9 @@ class AiSettings(BaseModel):
     prompt_supplement: str = ""
     auto_run_on_text_save: bool = True
     auto_retry_on_failure: bool = True
+    # 视觉理解开关：模型不支持 vision 时关掉，图片只存盘不走 vision provider，
+    # 影响所有客户端（Web 上传 / Android ImageAnalyzeWorker）。
+    vision_enabled: bool = True
 
 
 class ServerInfo(BaseModel):
@@ -93,6 +96,7 @@ async def get_settings_all():
             prompt_supplement=a["prompt_supplement"],
             auto_run_on_text_save=a["auto_run_on_text_save"],
             auto_retry_on_failure=a["auto_retry_on_failure"],
+            vision_enabled=a["vision_enabled"],
         ),
         server_info=ServerInfo(
             webdav_configured=bool(w["base_url"]),
@@ -119,7 +123,7 @@ async def update_settings(body: SettingsUpdate):
         for k, v in body.ai.items():
             if k in ("base_url", "token", "model", "endpoint_mode", "prompt_supplement"):
                 updates[f"ai.{k}"] = v
-            elif k in ("enabled", "auto_run_on_text_save", "auto_retry_on_failure"):
+            elif k in ("enabled", "auto_run_on_text_save", "auto_retry_on_failure", "vision_enabled"):
                 updates[f"ai.{k}"] = bool(v) if v is not None else None
 
     await settings_store.set_many(updates)
