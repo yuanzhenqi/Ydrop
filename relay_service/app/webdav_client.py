@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 import logging
 from base64 import b64encode
@@ -133,7 +134,10 @@ class WebDavClient:
             hrefs = href_pattern.findall(resp_text)
             if not hrefs:
                 continue
-            href = unquote(hrefs[-1].strip())
+            # 双重解码：先 URL-decode（%20→空格），再 HTML-unescape（&amp;→&、&lt;→< 等）。
+            # 某些 WebDAV 服务（rclone serve webdav 等）在 XML 响应里把 & 编码成 &amp;，
+            # 不解码会让带 & 的文件名 PUT/GET 时 404。
+            href = html.unescape(unquote(hrefs[-1].strip()))
             if not href.endswith(".md"):
                 continue
             filename = href.rsplit("/", 1)[-1]
