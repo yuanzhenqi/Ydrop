@@ -15,6 +15,7 @@ from .markdown_format import default_color_for
 from .models import AiAnalyzeRequest
 from .models_notes import (
     AiSuggestionResponse,
+    LinkPreviewItem,
     NoteCreate,
     NoteListResponse,
     NoteResponse,
@@ -35,7 +36,24 @@ def _trigger_delete_remote(note_id: str) -> None:
     asyncio.create_task(delete_remote_by_id(note_id))
 
 
+def _trigger_link_preview(note_id: str) -> None:
+    """fire-and-forget：异步抓取链接预览。失败不影响主流程。"""
+    from .link_preview_worker import schedule_for_note
+    asyncio.create_task(schedule_for_note(note_id))
+
+
 def _row_to_note(row) -> NoteResponse:
+    # 兼容老 DB 没 link_previews_json 列的情况（_migrate 已加，但读 row 时仍可能 None）
+    keys = row.keys() if hasattr(row, "keys") else []
+    link_previews_json = row["link_previews_json"] if "link_previews_json" in keys else None
+    link_items: list[LinkPreviewItem] = []
+    if link_previews_json:
+        try:
+            raw = json.loads(link_previews_json)
+            if isinstance(raw, list):
+                link_items = [LinkPreviewItem(**item) for item in raw if isinstance(item, dict)]
+        except Exception:
+            link_items = []
     return NoteResponse(
         id=row["id"],
         title=row["title"],
@@ -61,6 +79,7 @@ def _row_to_note(row) -> NoteResponse:
         audio_path=row["audio_path"],
         relay_url=row["relay_url"],
         transcription_status=row["transcription_status"] or "NOT_STARTED",
+        link_previews=link_items,
     )
 
 
@@ -146,6 +165,7 @@ async def create_note(body: NoteCreate):
     await db.commit()
 
     _trigger_push(note_id)
+    _trigger_link_preview(note_id)
 
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
@@ -194,6 +214,9 @@ async def update_note(note_id: str, body: NoteUpdate):
     await db.commit()
 
     _trigger_push(note_id)
+    # content 可能含新链接，重抓预览（worker 内部有 7 天 cache，不会浪费）
+    if body.content is not None or body.title is not None:
+        _trigger_link_preview(note_id)
 
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])

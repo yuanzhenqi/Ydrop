@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS notes (
     transcript TEXT,
     audio_path TEXT,
     relay_url TEXT,
-    transcription_status TEXT DEFAULT 'NOT_STARTED'
+    transcription_status TEXT DEFAULT 'NOT_STARTED',
+    link_previews_json TEXT DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at);
@@ -145,6 +146,12 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     cols = {row[1] for row in await cur.fetchall()}
     if "suggested_tags_json" not in cols:
         await db.execute("ALTER TABLE ai_suggestions ADD COLUMN suggested_tags_json TEXT DEFAULT '[]'")
+
+    # notes.link_previews_json (Web 对齐 Android v1.1.0 J Phase 1 链接预览)
+    cur = await db.execute("PRAGMA table_info(notes)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "link_previews_json" not in cols:
+        await db.execute("ALTER TABLE notes ADD COLUMN link_previews_json TEXT DEFAULT '[]'")
 
 
 async def close_db() -> None:

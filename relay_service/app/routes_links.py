@@ -63,15 +63,15 @@ def _ascii_safe_url(url: str) -> str:
     )
 
 
-@router.post("/preview", response_model=LinkPreviewResponse)
-async def preview(body: LinkPreviewRequest) -> LinkPreviewResponse:
-    if not re.match(r"^https?://", body.url, re.IGNORECASE):
-        raise HTTPException(400, "url must be http(s)")
+async def fetch_preview_internal(url: str, want_summary: bool = True) -> LinkPreviewResponse:
+    """无 HTTP 包装的预览抓取核心，给后台 worker 复用（不抛 HTTPException）。
 
-    # 客户端正则如果意外放过了含中文的 URL，这里再兜底一次：
-    # 把 path/query/fragment 里的非 ASCII 字符 pct-encoded，scheme + host 保持不变。
-    # 之前直接把原始含中文 URL 扔给 urllib.urlopen 会抛 'ascii' codec can't encode characters。
-    safe_url = _ascii_safe_url(body.url)
+    流程：urllib pull HTML → BS4 抽 og meta → readability 抽正文 → 可选 LLM 摘要。
+    任一步失败都返回 error 态的 LinkPreviewResponse，不抛。"""
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        return LinkPreviewResponse(url=url, error="url must be http(s)")
+
+    safe_url = _ascii_safe_url(url)
 
     try:
         req = urllib.request.Request(safe_url, headers={"User-Agent": UA})
@@ -84,14 +84,13 @@ async def preview(body: LinkPreviewRequest) -> LinkPreviewResponse:
                 charset = m.group(1)
             html = raw.decode(charset, errors="ignore")
     except Exception as e:
-        logger.warning("preview fetch failed url=%s: %s", body.url, e)
-        # 用原始 url 返回给客户端（保留用户看到的原文），error 字段带出失败原因
-        return LinkPreviewResponse(url=body.url, error=str(e)[:160])
+        logger.warning("preview fetch failed url=%s: %s", url, e)
+        return LinkPreviewResponse(url=url, error=str(e)[:160])
 
-    meta = _extract_meta(html, body.url)
+    meta = _extract_meta(html, url)
 
     summary = ""
-    if body.want_summary:
+    if want_summary:
         try:
             main_text = _extract_main_text(html)[:3000]
             ai_cfg = await settings_store.get_ai_config()
@@ -108,16 +107,21 @@ async def preview(body: LinkPreviewRequest) -> LinkPreviewResponse:
                     response_format="text",
                 )[:400]
         except Exception as e:
-            logger.warning("summary failed url=%s: %s", body.url, e)
+            logger.warning("summary failed url=%s: %s", url, e)
 
     return LinkPreviewResponse(
-        url=body.url,
+        url=url,
         title=meta["title"],
         description=meta["description"],
         image_url=meta["image_url"],
         site_name=meta["site_name"],
         summary=summary,
     )
+
+
+@router.post("/preview", response_model=LinkPreviewResponse)
+async def preview(body: LinkPreviewRequest) -> LinkPreviewResponse:
+    return await fetch_preview_internal(body.url, body.want_summary)
 
 
 def _extract_meta(html: str, base_url: str) -> dict:

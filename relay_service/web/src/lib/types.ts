@@ -4,6 +4,17 @@ export type NotePriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT'
 export type NoteColorToken = 'SAGE' | 'AMBER' | 'SKY' | 'ROSE'
 export type NoteStatus = 'LOCAL_ONLY' | 'SYNCING' | 'SYNCED' | 'FAILED'
 
+export interface LinkPreview {
+  url: string
+  title: string
+  description: string
+  image_url: string
+  site_name: string
+  summary: string
+  fetched_at: number
+  error?: string | null
+}
+
 export interface Note {
   id: string
   title: string
@@ -29,6 +40,7 @@ export interface Note {
   audio_path?: string
   relay_url?: string
   transcription_status: string
+  link_previews?: LinkPreview[]
 }
 
 export interface NoteListResponse {

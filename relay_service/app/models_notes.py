@@ -19,6 +19,18 @@ class NoteUpdate(BaseModel):
     tags: list[str] | None = None
 
 
+class LinkPreviewItem(BaseModel):
+    """对齐 Android model/LinkPreview.kt（snake_case 命名跟随 web API 风格）"""
+    url: str
+    title: str = ""
+    description: str = ""
+    image_url: str = ""
+    site_name: str = ""
+    summary: str = ""
+    fetched_at: int = 0
+    error: str | None = None
+
+
 class NoteResponse(BaseModel):
     id: str
     title: str
@@ -44,6 +56,7 @@ class NoteResponse(BaseModel):
     audio_path: str | None = None
     relay_url: str | None = None
     transcription_status: str = "NOT_STARTED"
+    link_previews: list[LinkPreviewItem] = Field(default_factory=list)
 
 
 class NoteListResponse(BaseModel):

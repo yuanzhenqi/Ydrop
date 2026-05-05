@@ -7,6 +7,7 @@ import { formatTime } from '@/lib/date'
 import { MarkdownView } from '@/components/common/MarkdownView'
 import { Archive, ArchiveRestore, Trash2, RotateCcw, Pencil, Copy, Sparkles, ChevronDown, ChevronUp, Loader2, Undo2 } from 'lucide-react'
 import { ReminderCandidateList } from '@/components/reminders/ReminderCandidateList'
+import { LinkPreviewCard } from '@/components/notes/LinkPreviewCard'
 
 interface NoteCardProps {
   note: Note
@@ -130,6 +131,16 @@ export function NoteCard({ note, section, selected, suggestion, aiLoading, onEdi
             {suggestion?.status === 'FAILED' && (
               <div className="text-xs text-red-600 bg-red-50 px-2 py-1 rounded">
                 AI 整理失败：{suggestion.error_message || '未知错误'}
+              </div>
+            )}
+
+            {/* 链接预览卡（J Phase 1 对齐）。relay 后台 worker 在保存后异步抓取，
+                10-30 秒内能看到。失败的 entry 也会渲染（降级 chip 样式）。 */}
+            {note.link_previews && note.link_previews.length > 0 && (
+              <div className="space-y-2">
+                {note.link_previews.map((p) => (
+                  <LinkPreviewCard key={p.url} preview={p} />
+                ))}
               </div>
             )}
 
