@@ -69,6 +69,15 @@ class FeishuPushAllResult(BaseModel):
     failed: int = 0
 
 
+class FeishuPullResult(BaseModel):
+    ok: bool
+    message: str = ""
+    pulled_updated: int = 0
+    pulled_created: int = 0
+    trashed_local: int = 0
+    errors: list[str] = []
+
+
 # ─── Endpoints ───
 
 
@@ -185,6 +194,23 @@ async def init_ydrop_table():
         return FeishuInitTableResult(ok=False, message=f"未预期错误：{e}")
     finally:
         await client.close()
+
+
+@router.post("/sync/pull", response_model=FeishuPullResult)
+async def pull_from_feishu_endpoint():
+    """从飞书 Bitable 拉取所有 record，按 ydrop_id 与本地笔记 last_write_wins 合并；
+    Bitable 端新建（无 ydrop_id）的 record 会创建本地笔记 + 回写 ydrop_id；
+    本地有 mapping 但远端缺失的笔记移回收站。"""
+    from .feishu_orchestrator import pull_from_feishu
+    result = await pull_from_feishu()
+    return FeishuPullResult(
+        ok=result.get("ok", False),
+        message=result.get("message", ""),
+        pulled_updated=result.get("pulled_updated", 0),
+        pulled_created=result.get("pulled_created", 0),
+        trashed_local=result.get("trashed_local", 0),
+        errors=result.get("errors", []),
+    )
 
 
 @router.post("/sync/push-all", response_model=FeishuPushAllResult)

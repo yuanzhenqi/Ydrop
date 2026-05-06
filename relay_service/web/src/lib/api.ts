@@ -1,4 +1,4 @@
-import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse, FeishuSettings, FeishuSettingsUpdate, FeishuTestResult, FeishuInitTableResult, FeishuPushAllResult } from './types'
+import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse, FeishuSettings, FeishuSettingsUpdate, FeishuTestResult, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult } from './types'
 
 function getToken(): string {
   if (typeof window === 'undefined') return ''
@@ -315,4 +315,8 @@ export async function initFeishuTable(): Promise<FeishuInitTableResult> {
 
 export async function feishuPushAll(): Promise<FeishuPushAllResult> {
   return request<FeishuPushAllResult>('/api/feishu/sync/push-all', { method: 'POST' })
+}
+
+export async function feishuPull(): Promise<FeishuPullResult> {
+  return request<FeishuPullResult>('/api/feishu/sync/pull', { method: 'POST' })
 }

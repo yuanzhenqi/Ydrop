@@ -155,6 +155,15 @@ export interface FeishuPushAllResult {
   failed: number
 }
 
+export interface FeishuPullResult {
+  ok: boolean
+  message: string
+  pulled_updated: number
+  pulled_created: number
+  trashed_local: number
+  errors: string[]
+}
+
 export interface AppSettings {
   webdav: WebDavSettings
   ai: AiSettings

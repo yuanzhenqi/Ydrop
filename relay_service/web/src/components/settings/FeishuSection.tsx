@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable, feishuPushAll } from '@/lib/api'
-import type { FeishuSettings, FeishuInitTableResult, FeishuPushAllResult } from '@/lib/types'
+import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable, feishuPushAll, feishuPull } from '@/lib/api'
+import type { FeishuSettings, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult } from '@/lib/types'
 import { SettingsSection } from './SettingsSection'
 import { SettingsField, TextInput } from './SettingsField'
 import { SettingsToggle } from './SettingsToggle'
@@ -31,6 +31,8 @@ export function FeishuSection({ onToast }: Props) {
   const [initing, setIniting] = useState(false)
   const [pushing, setPushing] = useState(false)
   const [pushResult, setPushResult] = useState<FeishuPushAllResult | null>(null)
+  const [pulling, setPulling] = useState(false)
+  const [pullResult, setPullResult] = useState<FeishuPullResult | null>(null)
 
   useEffect(() => {
     refresh()
@@ -117,6 +119,24 @@ export function FeishuSection({ onToast }: Props) {
       onToast('error', '推送失败：' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setPushing(false)
+    }
+  }
+
+  async function handlePull() {
+    setPulling(true)
+    setPullResult(null)
+    try {
+      const r = await feishuPull()
+      setPullResult(r)
+      if (r.ok) {
+        onToast(r.errors.length === 0 ? 'success' : 'error', r.message)
+      } else {
+        onToast('error', r.message || '拉取失败')
+      }
+    } catch (e) {
+      onToast('error', '拉取失败：' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setPulling(false)
     }
   }
 
@@ -284,6 +304,42 @@ export function FeishuSection({ onToast }: Props) {
             }`}
           >
             {pushResult.message} (推送 {pushResult.pushed}，失败 {pushResult.failed})
+          </div>
+        )}
+      </div>
+
+      {/* 反向拉取：从飞书 Bitable 同步回 Ydrop */}
+      <div className="pt-3 mt-2 border-t space-y-2">
+        <div className="text-xs text-gray-500 leading-relaxed">
+          点「从飞书拉取」会把 Bitable 端的所有 record 同步回 Ydrop：
+          按 ydrop_id 比对 updated_at 决定方向（last-write-wins）；
+          Bitable 端新建的 record（无 ydrop_id）会自动创建本地笔记并把生成的 ydrop_id 写回飞书；
+          Bitable 端删除的 record 会让本地笔记移回收站。
+        </div>
+        <button
+          onClick={handlePull}
+          disabled={pulling || !settings.enabled}
+          className="px-3 py-1.5 text-sm rounded-lg bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+          title={!settings.enabled ? '请先启用飞书同步' : ''}
+        >
+          {pulling ? '拉取中...' : '从飞书拉取（双向同步）'}
+        </button>
+        {pullResult && (
+          <div
+            className={`rounded-lg px-3 py-2 text-xs ${
+              pullResult.ok && pullResult.errors.length === 0
+                ? 'bg-emerald-50 text-emerald-700'
+                : 'bg-amber-50 text-amber-700'
+            }`}
+          >
+            {pullResult.message}
+            {pullResult.errors.length > 0 && (
+              <ul className="list-disc list-inside mt-1 text-red-600">
+                {pullResult.errors.slice(0, 5).map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

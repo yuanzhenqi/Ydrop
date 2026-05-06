@@ -42,3 +42,69 @@ def note_to_bitable_fields(note: dict[str, Any]) -> dict[str, Any]:
         "更新时间": int(note.get("updated_at") or 0),
         "ydrop_id": note.get("id") or "",
     }
+
+
+def _coerce_text(v: Any) -> str:
+    """Bitable 文本字段返回的可能是 str，也可能是 [{type:'text', text:'...'}]（多行文本）。"""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        # 富文本 segment 数组
+        return "".join(seg.get("text", "") if isinstance(seg, dict) else str(seg) for seg in v)
+    if isinstance(v, dict):
+        return v.get("text", "") or v.get("value", "") or ""
+    return str(v)
+
+
+def _coerce_select_label(v: Any) -> str:
+    """单选返回的可能是 str（选项名）。多选是 list[str]。这里只取单选。"""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list) and v:
+        first = v[0]
+        return _coerce_text(first)
+    return ""
+
+
+def _coerce_multi_select(v: Any) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [_coerce_text(x) for x in v if x]
+    if isinstance(v, str):
+        return [v]
+    return []
+
+
+def bitable_fields_to_note_dict(fields: dict, record_id: str, last_modified_ms: int) -> dict[str, Any]:
+    """把 Bitable record.fields 转换回 note dict。
+
+    返回 dict 含：id (来自 ydrop_id 或生成)、title、content、category、priority、tags、
+    is_archived、created_at、updated_at。调用方负责把它写进 SQLite。
+    last_modified_ms 由调用方从 record.last_modified_time 传入（毫秒）。
+    """
+    title = _coerce_text(fields.get("标题")).strip()
+    content = _coerce_text(fields.get("内容"))
+    category_label = _coerce_select_label(fields.get("类型"))
+    priority_label = _coerce_select_label(fields.get("优先级"))
+    tags = _coerce_multi_select(fields.get("标签"))
+    is_archived = bool(fields.get("已归档") or False)
+    created_at_raw = fields.get("创建时间")
+    created_at = int(created_at_raw) if isinstance(created_at_raw, (int, float)) else last_modified_ms
+    updated_at = last_modified_ms
+    ydrop_id = _coerce_text(fields.get("ydrop_id")).strip()
+
+    return {
+        "id": ydrop_id,  # 空字符串表示 Bitable 端新建、没绑过 ydrop_id；caller 决定生成 uuid
+        "title": title or "无标题",
+        "content": content,
+        "category": LABEL_TO_CATEGORY.get(category_label, "NOTE"),
+        "priority": LABEL_TO_PRIORITY.get(priority_label, "MEDIUM"),
+        "tags": tags,
+        "is_archived": is_archived,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "_record_id": record_id,
+    }

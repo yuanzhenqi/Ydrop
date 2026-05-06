@@ -20,10 +20,13 @@ import logging
 import time
 from typing import Any, Optional
 
+import json as _json
+import uuid as _uuid
+
 from . import settings_store
 from .database import get_db
 from .feishu_client import FeishuClient, FeishuError
-from .feishu_mapping import note_to_bitable_fields
+from .feishu_mapping import bitable_fields_to_note_dict, note_to_bitable_fields
 
 logger = logging.getLogger("feishu_sync")
 
@@ -163,6 +166,150 @@ async def delete_note(note_id: str) -> bool:
         return False
     finally:
         await client.close()
+
+
+async def pull_from_feishu() -> dict:
+    """反向拉：Bitable → Ydrop。每条 record 按 ydrop_id 找本地笔记，
+    last_write_wins 决定方向；本地有 mapping 但远端缺失的笔记移本地回收站；
+    远端无 ydrop_id 的 record 创建新本地笔记 + 回写 ydrop_id 到 Bitable。
+
+    返回 {ok, message, pulled_updated, pulled_created, trashed_local, errors}.
+    """
+    cfg = await _get_enabled_config()
+    if cfg is None:
+        return {"ok": False, "message": "飞书未配置或未启用"}
+
+    db = await get_db()
+    client = FeishuClient(app_id=cfg["app_id"], app_secret=cfg["app_secret"])
+    pulled_updated = 0
+    pulled_created = 0
+    trashed_local = 0
+    errors: list[str] = []
+
+    try:
+        records = await client.list_records(cfg["app_token"], cfg["table_id"])
+    except FeishuError as e:
+        await client.close()
+        return {"ok": False, "message": f"列出 records 失败：{e}"}
+
+    seen_record_ids: set[str] = set()
+
+    for rec in records:
+        try:
+            rid = rec.get("record_id", "")
+            if not rid:
+                continue
+            seen_record_ids.add(rid)
+            fields = rec.get("fields") or {}
+            last_mod_ms = int(rec.get("last_modified_time") or 0)
+            remote = bitable_fields_to_note_dict(fields, rid, last_mod_ms)
+
+            ydrop_id = remote["id"]
+            if not ydrop_id:
+                # 飞书端新建的 record，没绑 ydrop_id：生成一个 + 回写
+                new_id = _uuid.uuid4().hex
+                remote["id"] = new_id
+                await _upsert_local_from_remote(remote, is_new=True)
+                pulled_created += 1
+                # 回写 ydrop_id 到飞书 record，让下次能命中 mapping
+                try:
+                    await client.update_record(
+                        cfg["app_token"], cfg["table_id"], rid, {"ydrop_id": new_id}
+                    )
+                    await _save_mapping(new_id, rid)
+                except FeishuError as e:
+                    errors.append(f"回写 ydrop_id 到 record={rid} 失败：{e}")
+                continue
+
+            # 已有 ydrop_id：last_write_wins
+            local = await _load_note_dict(ydrop_id)
+            if local is None:
+                # 本地没了（可能被彻底删过），跳过避免复活
+                continue
+            if remote["updated_at"] > local["updated_at"]:
+                await _upsert_local_from_remote(remote, is_new=False)
+                pulled_updated += 1
+            await _save_mapping(ydrop_id, rid)
+        except Exception as e:
+            errors.append(f"处理 record={rec.get('record_id','?')} 异常：{e}")
+            logger.error("pull_from_feishu record failed: %s", e, exc_info=True)
+
+    # 远端少了的 mapping → 本地移回收站（用户在 Bitable 删 record 的语义）
+    rows = await db.execute_fetchall("SELECT note_id, record_id FROM feishu_mappings")
+    for row in rows:
+        if row["record_id"] not in seen_record_ids:
+            try:
+                now = int(asyncio.get_event_loop().time() * 1000)
+                # 用 SQLite 时间戳一致，避免循环引入 time
+                import time as _time
+                now = int(_time.time() * 1000)
+                await db.execute(
+                    "UPDATE notes SET is_trashed = 1, trashed_at = ?, updated_at = ?, status = 'LOCAL_ONLY' "
+                    "WHERE id = ? AND is_trashed = 0",
+                    [now, now, row["note_id"]],
+                )
+                if db.total_changes > 0:
+                    trashed_local += 1
+                # mapping 也清掉，下次再创建会走 create 分支
+                await db.execute("DELETE FROM feishu_mappings WHERE note_id = ?", [row["note_id"]])
+            except Exception as e:
+                errors.append(f"trash 本地 note={row['note_id']} 失败：{e}")
+    await db.commit()
+    await client.close()
+
+    return {
+        "ok": True,
+        "message": f"拉取完成：更新 {pulled_updated}，新增 {pulled_created}，本地回收 {trashed_local}",
+        "pulled_updated": pulled_updated,
+        "pulled_created": pulled_created,
+        "trashed_local": trashed_local,
+        "errors": errors,
+    }
+
+
+async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
+    """把从 Bitable 拉回来的 dict 写进 SQLite notes 表。
+    - is_new=True：INSERT，需要补 source/color_token/status 等默认值
+    - is_new=False：仅更新可变字段（title/content/category/priority/tags/is_archived/updated_at）
+    """
+    from .markdown_format import default_color_for
+    db = await get_db()
+    if is_new:
+        color = default_color_for(remote["category"], remote["priority"])
+        await db.execute(
+            """INSERT OR REPLACE INTO notes
+               (id, title, content, source, category, priority, color_token, status,
+                created_at, updated_at, last_synced_at,
+                is_archived, archived_at, is_trashed, trashed_at, tags_json,
+                transcription_status)
+               VALUES (?, ?, ?, 'TEXT', ?, ?, ?, 'LOCAL_ONLY', ?, ?, ?, ?, ?, 0, NULL, ?, 'NOT_STARTED')""",
+            [
+                remote["id"], remote["title"], remote["content"],
+                remote["category"], remote["priority"], color,
+                remote["created_at"], remote["updated_at"], remote["updated_at"],
+                1 if remote["is_archived"] else 0,
+                remote["updated_at"] if remote["is_archived"] else None,
+                _json.dumps(remote["tags"], ensure_ascii=False),
+            ],
+        )
+    else:
+        from .markdown_format import default_color_for
+        color = default_color_for(remote["category"], remote["priority"])
+        await db.execute(
+            """UPDATE notes SET title = ?, content = ?, category = ?, priority = ?,
+               color_token = ?, tags_json = ?, is_archived = ?, archived_at = ?,
+               updated_at = ?, status = 'LOCAL_ONLY'
+               WHERE id = ?""",
+            [
+                remote["title"], remote["content"], remote["category"], remote["priority"],
+                color,
+                _json.dumps(remote["tags"], ensure_ascii=False),
+                1 if remote["is_archived"] else 0,
+                remote["updated_at"] if remote["is_archived"] else None,
+                remote["updated_at"],
+                remote["id"],
+            ],
+        )
 
 
 async def push_all_active() -> dict:

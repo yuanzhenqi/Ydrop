@@ -275,6 +275,16 @@ async def delete_remote_by_id(note_id: str) -> bool:
         return False
 
 
+def _trigger_feishu_after_webdav_pull(note_id: str) -> None:
+    """WebDAV 拉到 Android 端的笔记后，也推一遍飞书。
+    fire-and-forget，失败不阻塞 sync 主流程。"""
+    try:
+        from .feishu_orchestrator import trigger_push as _ft
+        _ft(note_id)
+    except Exception as e:
+        logger.warning("feishu trigger after webdav pull failed note=%s: %s", note_id, e)
+
+
 async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
     now = int(time.time() * 1000)
     tags_json = json.dumps(note.get("tags", []), ensure_ascii=False)
@@ -299,6 +309,9 @@ async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
             attachments_json,
         ],
     )
+    # WebDAV 拉到（多半来自 Android 端写入），也推一遍飞书 Bitable —— 否则 Android 端的改动
+    # 永远不会反映到飞书。fire-and-forget；feishu 未启用时短路。
+    _trigger_feishu_after_webdav_pull(note["id"])
 
 
 async def _push_note(db, client: WebDavClient, local_row) -> bool:

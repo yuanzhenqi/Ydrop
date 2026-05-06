@@ -287,6 +287,26 @@ class FeishuClient:
                 errors.append({"name": name, "code": e.code, "msg": str(e)})
         return {"created": created, "skipped": skipped, "errors": errors}
 
+    # ─── Bitable: 列出 records（自动翻页）───
+
+    async def list_records(self, app_token: str, table_id: str, page_size: int = 200) -> list[dict]:
+        """列出表里所有 record。每条含 record_id / fields / created_time / last_modified_time。
+
+        page_size 上限 500；这里 200 以减少单次响应体积，给慢网容差。
+        """
+        out: list[dict] = []
+        page_token = ""
+        while True:
+            qs = f"?page_size={page_size}" + (f"&page_token={page_token}" if page_token else "")
+            data = await self._bearer_get(RECORDS_PATH.format(app_token=app_token, table_id=table_id) + qs)
+            out.extend(data.get("items") or [])
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token") or ""
+            if not page_token:
+                break
+        return out
+
     # ─── Bitable: record CRUD ───
 
     async def create_record(self, app_token: str, table_id: str, fields: dict) -> dict:
