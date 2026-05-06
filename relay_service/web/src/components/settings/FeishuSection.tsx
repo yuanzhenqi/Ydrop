@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable, feishuPushAll, feishuPull } from '@/lib/api'
-import type { FeishuSettings, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult } from '@/lib/types'
+import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable, feishuPushAll, feishuPull, fetchFeishuConflicts, resolveFeishuConflict } from '@/lib/api'
+import type { FeishuSettings, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult, FeishuConflictItem } from '@/lib/types'
 import { SettingsSection } from './SettingsSection'
 import { SettingsField, TextInput } from './SettingsField'
 import { SettingsToggle } from './SettingsToggle'
@@ -33,9 +33,15 @@ export function FeishuSection({ onToast }: Props) {
   const [pushResult, setPushResult] = useState<FeishuPushAllResult | null>(null)
   const [pulling, setPulling] = useState(false)
   const [pullResult, setPullResult] = useState<FeishuPullResult | null>(null)
+  const [conflicts, setConflicts] = useState<FeishuConflictItem[]>([])
+  const [showConflicts, setShowConflicts] = useState(false)
 
   useEffect(() => {
     refresh()
+    refreshConflicts()
+    // 每 30s 刷一次冲突列表（不用 SWR 简化）
+    const t = setInterval(refreshConflicts, 30000)
+    return () => clearInterval(t)
   }, [])
 
   async function refresh() {
@@ -45,6 +51,29 @@ export function FeishuSection({ onToast }: Props) {
       setDraft({ app_id: s.app_id, app_secret: '', app_token: s.app_token, table_id: s.table_id })
     } catch (e) {
       onToast('error', '加载飞书配置失败：' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+
+  async function refreshConflicts() {
+    try {
+      const list = await fetchFeishuConflicts(true)
+      setConflicts(list)
+    } catch {
+      // 忽略 — 没启用 / 网络问题时不刷
+    }
+  }
+
+  async function handleResolveConflict(id: number, choice: 'local' | 'remote') {
+    try {
+      const r = await resolveFeishuConflict(id, choice)
+      if (r.ok) {
+        onToast('success', choice === 'local' ? '已回滚到本地版本' : '已接受飞书版本')
+        await refreshConflicts()
+      } else {
+        onToast('error', r.message || '解决冲突失败')
+      }
+    } catch (e) {
+      onToast('error', '解决冲突失败：' + (e instanceof Error ? e.message : String(e)))
     }
   }
 
@@ -147,6 +176,20 @@ export function FeishuSection({ onToast }: Props) {
       title="飞书多维表格"
       description="双向同步 Ydrop 笔记到飞书 Bitable，团队可见 / 协作。需要在飞书开发者后台建一个自建应用并把它添加到目标多维表格。"
     >
+      {/* 待解决冲突提示（仅在有冲突时显示） */}
+      {conflicts.length > 0 && (
+        <button
+          onClick={() => setShowConflicts(true)}
+          className="w-full text-left px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 hover:bg-amber-100 text-xs text-amber-800 flex items-center gap-2"
+        >
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span className="flex-1">
+            ⚠ 飞书拉取时覆盖了 <strong>{conflicts.length}</strong> 条本地版本，点查看 / 回滚
+          </span>
+          <span className="text-amber-600">→</span>
+        </button>
+      )}
+
       <SettingsToggle
         label="启用飞书同步"
         description="开关后端 connector。关闭时所有飞书相关 sync 路径都短路。"
@@ -201,7 +244,7 @@ export function FeishuSection({ onToast }: Props) {
 
       <SettingsField
         label="自动拉取间隔（秒）"
-        hint="后台每 N 秒从飞书拉一次。最小 60，0 = 禁用定时只走手动。默认 300（5 分钟）"
+        hint="后台每 N 秒从飞书拉一次。最小 60，0 = 禁用定时只走手动。默认 300（5 分钟）。配了 webhook 后可以拉长到 30min 兜底"
       >
         <input
           type="number"
@@ -215,6 +258,44 @@ export function FeishuSection({ onToast }: Props) {
           }}
           className="w-32 text-sm border rounded-lg px-2 py-1.5 outline-none focus:border-emerald-400"
         />
+      </SettingsField>
+
+      {/* Webhook URL 显示 + 复制 + 飞书 Automation 配置说明 */}
+      <SettingsField
+        label="实时反推 Webhook URL"
+        hint="把这个 URL 配到飞书 Automation「发送 HTTP 请求」action，记录改动几秒内就同步回 Ydrop。请保密 — 包含 secret"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            readOnly
+            value={settings.webhook_url || '加载中...'}
+            className="flex-1 text-xs font-mono border rounded-lg px-2 py-1.5 bg-gray-50"
+          />
+          <button
+            onClick={() => {
+              if (settings.webhook_url) {
+                navigator.clipboard.writeText(settings.webhook_url)
+                onToast('success', 'Webhook URL 已复制')
+              }
+            }}
+            className="px-2 py-1 text-xs rounded-lg bg-gray-100 hover:bg-gray-200"
+          >
+            复制
+          </button>
+        </div>
+        <details className="mt-2 text-xs text-gray-500">
+          <summary className="cursor-pointer hover:text-emerald-600">飞书 Automation 配置示例（点开）</summary>
+          <ol className="list-decimal list-inside space-y-1 mt-2 leading-relaxed">
+            <li>飞书 Bitable 右上角「⚡ 自动化」→ 新建流程</li>
+            <li>触发条件：「记录满足条件时」选「记录被新增 / 更新 / 删除」</li>
+            <li>执行：「发送 HTTP 请求」</li>
+            <li>请求方式选 POST，URL 粘上面那个</li>
+            <li>请求体粘：<code className="bg-white px-1 rounded">{`{"record_id":"{{记录.记录ID}}"}`}</code>（精确单条，最快）</li>
+            <li>请求头：<code className="bg-white px-1 rounded">Content-Type: application/json</code></li>
+            <li>启用流程。改一条 record 测试，几秒内 Ydrop 这边应该看到变化</li>
+          </ol>
+        </details>
       </SettingsField>
 
       <div className="flex items-center gap-3 pt-1">
@@ -361,6 +442,89 @@ export function FeishuSection({ onToast }: Props) {
           </div>
         )}
       </div>
+
+      {/* 冲突列表模态 */}
+      {showConflicts && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => setShowConflicts(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b">
+              <div className="text-base font-semibold">飞书覆盖冲突（{conflicts.length}）</div>
+              <button
+                onClick={() => setShowConflicts(false)}
+                className="text-gray-400 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+              {conflicts.length === 0 && (
+                <div className="text-center text-gray-400 py-8">没有未解决的冲突</div>
+              )}
+              {conflicts.map((c) => {
+                const tags = c.prev_tags_json ? JSON.parse(c.prev_tags_json) : []
+                const isLikelyConflict = c.prev_updated_at && c.new_updated_at
+                  && Math.abs(c.new_updated_at - c.prev_updated_at) < 60 * 60 * 1000
+                return (
+                  <div
+                    key={c.id}
+                    className={`rounded-lg border p-3 space-y-2 ${
+                      isLikelyConflict ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium">
+                        {c.note_title || c.prev_title || c.note_id.slice(0, 8)}
+                        {isLikelyConflict && (
+                          <span className="ml-2 text-amber-700">⚠ 可能是真冲突（双方近期都改过）</span>
+                        )}
+                      </div>
+                      <div className="text-gray-400 text-[10px]">
+                        {new Date(c.occurred_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-white rounded px-2 py-1">
+                        <div className="text-gray-500 mb-1">本地（覆盖前）</div>
+                        <div className="font-medium truncate">{c.prev_title || '(无标题)'}</div>
+                        <div className="text-gray-600 line-clamp-3 mt-1">{c.prev_content || ''}</div>
+                        <div className="text-gray-400 mt-1 text-[10px]">
+                          {c.prev_category} / {c.prev_priority}
+                          {tags.length > 0 && ` · #${tags.join(' #')}`}
+                        </div>
+                      </div>
+                      <div className="bg-white rounded px-2 py-1">
+                        <div className="text-gray-500 mb-1">飞书（已覆盖）</div>
+                        <div className="font-medium truncate">{c.new_title || c.note_title || '?'}</div>
+                        <div className="text-gray-400 mt-1 text-[10px]">当前生效</div>
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        onClick={() => handleResolveConflict(c.id, 'remote')}
+                        className="px-3 py-1 rounded-lg text-gray-600 hover:bg-gray-100"
+                      >
+                        接受飞书版本
+                      </button>
+                      <button
+                        onClick={() => handleResolveConflict(c.id, 'local')}
+                        className="px-3 py-1 rounded-lg bg-emerald-500 text-white hover:bg-emerald-600"
+                      >
+                        回滚到本地版本
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </SettingsSection>
   )
 }

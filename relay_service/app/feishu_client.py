@@ -307,6 +307,20 @@ class FeishuClient:
                 break
         return out
 
+    # ─── Bitable: 单条 record ───
+
+    async def get_record(self, app_token: str, table_id: str, record_id: str) -> Optional[dict]:
+        """读单条 record。404 (1254043 / 1254040) 返回 None；其它错误抛 FeishuError。"""
+        try:
+            data = await self._bearer_get(
+                RECORD_ITEM_PATH.format(app_token=app_token, table_id=table_id, record_id=record_id)
+            )
+            return data.get("record") or None
+        except FeishuError as e:
+            if e.code in (1254043, 1254040):
+                return None
+            raise
+
     # ─── Bitable: record CRUD ───
 
     async def create_record(self, app_token: str, table_id: str, fields: dict) -> dict:

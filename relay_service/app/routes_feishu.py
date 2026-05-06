@@ -26,7 +26,8 @@ router = APIRouter(prefix="/api/feishu", dependencies=[Depends(require_relay_tok
 
 
 class FeishuSettings(BaseModel):
-    """返给客户端的配置。app_secret 不回传，只回 secret_set 标志。"""
+    """返给客户端的配置。app_secret 不回传，只回 secret_set 标志。
+    webhook_url 是预拼好的 webhook 完整地址（含 secret），用户可直接复制到飞书 Automation。"""
 
     enabled: bool = False
     app_id: str = ""
@@ -34,6 +35,7 @@ class FeishuSettings(BaseModel):
     app_token: str = ""
     table_id: str = ""
     sync_interval: int = 300
+    webhook_url: str = ""
 
 
 class FeishuSettingsUpdate(BaseModel):
@@ -80,12 +82,39 @@ class FeishuPullResult(BaseModel):
     errors: list[str] = []
 
 
+class FeishuConflictItem(BaseModel):
+    id: int
+    note_id: str
+    occurred_at: int
+    note_title: str | None = None
+    prev_title: str | None = None
+    prev_content: str | None = None
+    prev_category: str | None = None
+    prev_priority: str | None = None
+    prev_tags_json: str | None = None
+    prev_is_archived: int = 0
+    prev_updated_at: int | None = None
+    new_title: str | None = None
+    new_updated_at: int | None = None
+
+
+class FeishuConflictResolveBody(BaseModel):
+    choice: str  # 'local' | 'remote'
+
+
 # ─── Endpoints ───
 
 
 @router.get("/settings", response_model=FeishuSettings)
 async def get_feishu_settings():
     cfg = await settings_store.get_feishu_config()
+    # 拼接完整 webhook URL（PUBLIC_BASE_URL + path + secret）方便用户直接复制
+    from .config import get_settings as _gs
+    public_base = _gs().public_base_url.rstrip("/")
+    webhook_url = (
+        f"{public_base}/api/feishu/webhook/{cfg.get('webhook_secret', '')}"
+        if cfg.get("webhook_secret") else ""
+    )
     return FeishuSettings(
         enabled=cfg["enabled"],
         app_id=cfg["app_id"],
@@ -93,6 +122,7 @@ async def get_feishu_settings():
         app_token=cfg["app_token"],
         table_id=cfg["table_id"],
         sync_interval=cfg.get("sync_interval", 300),
+        webhook_url=webhook_url,
     )
 
 
@@ -205,6 +235,22 @@ async def init_ydrop_table():
         return FeishuInitTableResult(ok=False, message=f"未预期错误：{e}")
     finally:
         await client.close()
+
+
+@router.get("/conflicts", response_model=list[FeishuConflictItem])
+async def list_feishu_conflicts(only_unresolved: bool = True, limit: int = 50):
+    """列出从飞书拉取时被覆盖的本地版本快照。默认只看未解决的。"""
+    from .feishu_orchestrator import list_conflicts
+    items = await list_conflicts(only_unresolved=only_unresolved, limit=limit)
+    return [FeishuConflictItem(**item) for item in items]
+
+
+@router.post("/conflicts/{conflict_id}/resolve")
+async def resolve_feishu_conflict(conflict_id: int, body: FeishuConflictResolveBody):
+    """解决冲突：local = 回滚到本地版本（同时推回飞书 + WebDAV）；remote = 仅接受现状。"""
+    from .feishu_orchestrator import resolve_conflict
+    result = await resolve_conflict(conflict_id, body.choice)
+    return result
 
 
 @router.post("/sync/pull", response_model=FeishuPullResult)

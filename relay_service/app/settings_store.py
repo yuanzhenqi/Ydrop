@@ -199,9 +199,17 @@ async def get_feishu_config() -> dict[str, Any]:
     """飞书多维表格双向同步配置。app_id/app_secret 是自建应用凭据；
     app_token 是要同步的具体 Bitable 应用 ID（一个文档一个）；table_id 是该 Bitable 内具体一张表。
     enabled=False 时整个 connector 不启动，所有 sync 路径短路。
-    sync_interval：定时反向拉间隔（秒，默认 300）；设为 0 表示禁用定时只走手动。"""
+    sync_interval：定时反向拉间隔（秒，默认 300）；设为 0 表示禁用定时只走手动。
+    webhook_secret：飞书 Automation 反推 webhook 用的 URL 路径密钥，自动生成保留 32 字节随机串。"""
+    import secrets
+
     enabled = await get_value("feishu.enabled", "bool")
     interval = await get_value("feishu.sync_interval", "int")
+    webhook_secret = await get_value("feishu.webhook_secret", "str") or ""
+    if not webhook_secret:
+        # 首次读到无 secret 自动生成 + 持久化，让用户的 webhook URL 稳定
+        webhook_secret = secrets.token_urlsafe(24)
+        await set_value("feishu.webhook_secret", webhook_secret)
     return {
         "enabled": enabled if enabled is not None else False,
         "app_id": await get_value("feishu.app_id", "str") or "",
@@ -209,6 +217,7 @@ async def get_feishu_config() -> dict[str, Any]:
         "app_token": await get_value("feishu.app_token", "str") or "",
         "table_id": await get_value("feishu.table_id", "str") or "",
         "sync_interval": int(interval) if interval is not None else 300,
+        "webhook_secret": webhook_secret,
     }
 
 

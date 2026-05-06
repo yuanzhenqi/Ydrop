@@ -1,4 +1,4 @@
-import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse, FeishuSettings, FeishuSettingsUpdate, FeishuTestResult, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult } from './types'
+import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse, FeishuSettings, FeishuSettingsUpdate, FeishuTestResult, FeishuInitTableResult, FeishuPushAllResult, FeishuPullResult, FeishuConflictItem } from './types'
 
 function getToken(): string {
   if (typeof window === 'undefined') return ''
@@ -319,4 +319,16 @@ export async function feishuPushAll(): Promise<FeishuPushAllResult> {
 
 export async function feishuPull(): Promise<FeishuPullResult> {
   return request<FeishuPullResult>('/api/feishu/sync/pull', { method: 'POST' })
+}
+
+export async function fetchFeishuConflicts(onlyUnresolved = true): Promise<FeishuConflictItem[]> {
+  const qs = onlyUnresolved ? '?only_unresolved=true' : '?only_unresolved=false'
+  return request<FeishuConflictItem[]>(`/api/feishu/conflicts${qs}`)
+}
+
+export async function resolveFeishuConflict(conflictId: number, choice: 'local' | 'remote'): Promise<{ ok: boolean; message: string; note_id?: string }> {
+  return request(`/api/feishu/conflicts/${conflictId}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ choice }),
+  })
 }

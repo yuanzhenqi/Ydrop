@@ -123,6 +123,7 @@ export interface FeishuSettings {
   app_token: string
   table_id: string
   sync_interval: number  // 秒；0=仅手动
+  webhook_url: string    // 飞书 Automation 反推用，复制到「发送 HTTP 请求」action 的 URL
 }
 
 export interface FeishuSettingsUpdate {
@@ -164,6 +165,22 @@ export interface FeishuPullResult {
   pulled_created: number
   trashed_local: number
   errors: string[]
+}
+
+export interface FeishuConflictItem {
+  id: number
+  note_id: string
+  occurred_at: number
+  note_title?: string | null
+  prev_title?: string | null
+  prev_content?: string | null
+  prev_category?: string | null
+  prev_priority?: string | null
+  prev_tags_json?: string | null
+  prev_is_archived: number
+  prev_updated_at?: number | null
+  new_title?: string | null
+  new_updated_at?: number | null
 }
 
 export interface AppSettings {

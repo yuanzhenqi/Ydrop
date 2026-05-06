@@ -166,6 +166,30 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         )"""
     )
 
+    # feishu_conflicts 表（冲突可视化）：从 Bitable 拉到的版本覆盖本地之前，
+    # 把本地版本快照存这里，用户可一键回滚到本地版本。
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS feishu_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id TEXT NOT NULL,
+            occurred_at INTEGER NOT NULL,
+            prev_title TEXT,
+            prev_content TEXT,
+            prev_category TEXT,
+            prev_priority TEXT,
+            prev_tags_json TEXT,
+            prev_is_archived INTEGER NOT NULL DEFAULT 0,
+            prev_updated_at INTEGER,
+            new_title TEXT,
+            new_updated_at INTEGER,
+            resolved_at INTEGER,
+            resolved_choice TEXT  -- 'local' (回滚) | 'remote' (接受) | NULL (待处理)
+        )"""
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_feishu_conflicts_unresolved ON feishu_conflicts(resolved_at)"
+    )
+
 
 async def close_db() -> None:
     global _db

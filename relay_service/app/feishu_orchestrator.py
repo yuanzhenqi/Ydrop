@@ -168,6 +168,85 @@ async def delete_note(note_id: str) -> bool:
         await client.close()
 
 
+async def pull_one_record(record_id: str) -> dict:
+    """单条 record 反向拉（webhook 实时反推用）。
+
+    - 远端拉到：按 ydrop_id 走 last_write_wins；无 ydrop_id 创建本地 + 回写
+    - 远端 404：本地通过 mapping 找 note → 移回收站 + 清 mapping
+
+    返回 {ok, action: 'updated'|'created'|'trashed'|'noop'|'error', message}
+    """
+    cfg = await _get_enabled_config()
+    if cfg is None:
+        return {"ok": False, "action": "error", "message": "飞书未配置或未启用"}
+
+    client = FeishuClient(app_id=cfg["app_id"], app_secret=cfg["app_secret"])
+    try:
+        rec = await client.get_record(cfg["app_token"], cfg["table_id"], record_id)
+        if rec is None:
+            # 远端没了：找本地 mapping → 移回收站
+            db = await get_db()
+            rows = await db.execute_fetchall(
+                "SELECT note_id FROM feishu_mappings WHERE record_id = ?", [record_id]
+            )
+            if not rows:
+                return {"ok": True, "action": "noop", "message": "record 不存在且无 mapping"}
+            note_id = rows[0]["note_id"]
+            now = int(asyncio.get_event_loop().time() * 1000)
+            import time as _time
+            now = int(_time.time() * 1000)
+            await db.execute(
+                "UPDATE notes SET is_trashed = 1, trashed_at = ?, updated_at = ?, status = 'LOCAL_ONLY' "
+                "WHERE id = ? AND is_trashed = 0",
+                [now, now, note_id],
+            )
+            await db.execute("DELETE FROM feishu_mappings WHERE note_id = ?", [note_id])
+            await db.commit()
+            # 让 Android 也立刻能看到
+            try:
+                from .sync_orchestrator import push_single_note
+                asyncio.create_task(push_single_note(note_id))
+            except Exception:
+                pass
+            return {"ok": True, "action": "trashed", "message": f"本地 note={note_id[:8]} 移回收站"}
+
+        fields = rec.get("fields") or {}
+        last_mod_ms = int(rec.get("last_modified_time") or 0)
+        remote = bitable_fields_to_note_dict(fields, record_id, last_mod_ms)
+
+        ydrop_id = remote["id"]
+        if not ydrop_id:
+            # 飞书端新建无 ydrop_id：生成一个 + 写回
+            new_id = _uuid.uuid4().hex
+            remote["id"] = new_id
+            await _upsert_local_from_remote(remote, is_new=True)
+            try:
+                await client.update_record(
+                    cfg["app_token"], cfg["table_id"], record_id, {"ydrop_id": new_id}
+                )
+                await _save_mapping(new_id, record_id)
+            except FeishuError as e:
+                logger.warning("回写 ydrop_id 到 record=%s 失败: %s", record_id, e)
+            return {"ok": True, "action": "created", "message": f"创建本地 note={new_id[:8]}"}
+
+        local = await _load_note_dict(ydrop_id)
+        if local is None:
+            return {"ok": True, "action": "noop", "message": "本地笔记不存在（可能已彻底删）"}
+        if remote["updated_at"] > local["updated_at"]:
+            await _upsert_local_from_remote(remote, is_new=False)
+            await _save_mapping(ydrop_id, record_id)
+            return {"ok": True, "action": "updated", "message": f"更新本地 note={ydrop_id[:8]}"}
+        await _save_mapping(ydrop_id, record_id)
+        return {"ok": True, "action": "noop", "message": "本地比远端新或一致，跳过"}
+    except FeishuError as e:
+        return {"ok": False, "action": "error", "message": str(e)}
+    except Exception as e:
+        logger.error("pull_one_record exception record=%s: %s", record_id, e, exc_info=True)
+        return {"ok": False, "action": "error", "message": str(e)}
+    finally:
+        await client.close()
+
+
 async def pull_from_feishu() -> dict:
     """反向拉：Bitable → Ydrop。每条 record 按 ydrop_id 找本地笔记，
     last_write_wins 决定方向；本地有 mapping 但远端缺失的笔记移本地回收站；
@@ -270,7 +349,8 @@ async def pull_from_feishu() -> dict:
 async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
     """把从 Bitable 拉回来的 dict 写进 SQLite notes 表。
     - is_new=True：INSERT，需要补 source/color_token/status 等默认值
-    - is_new=False：仅更新可变字段（title/content/category/priority/tags/is_archived/updated_at）
+    - is_new=False：仅更新可变字段（title/content/category/priority/tags/is_archived/updated_at）；
+      覆盖前把本地版本快照写到 feishu_conflicts，用户可一键回滚。
 
     写完后 fire-and-forget 调 WebDAV push，让 Android 端几秒内就能拉到（不依赖
     sync_loop 5min 兜底）。三端互通的关键链路。
@@ -296,6 +376,8 @@ async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
             ],
         )
     else:
+        # 先快照本地版本（覆盖前），让用户能回滚
+        await _record_conflict_snapshot(remote)
         color = default_color_for(remote["category"], remote["priority"])
         await db.execute(
             """UPDATE notes SET title = ?, content = ?, category = ?, priority = ?,
@@ -318,6 +400,94 @@ async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
         asyncio.create_task(push_single_note(remote["id"]))
     except Exception as e:
         logger.warning("fire WebDAV push after feishu pull failed note=%s: %s", remote["id"], e)
+
+
+async def _record_conflict_snapshot(remote: dict) -> None:
+    """从 Bitable 拉来的版本要覆盖本地 update 之前，把本地状态快照写 feishu_conflicts。
+
+    判断是否是「真冲突」用一个粗略启发式：本地 updated_at 和 remote.updated_at 的差距
+    在 1 小时内 = 双方近期都改过 = 倾向真冲突。差距大说明本地很久没动过、覆盖是正常的。
+
+    为了用户安全感，**所有 update** 都记 snapshot；用户视图默认只显示 1h 内的视为「需要决策」。
+    """
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT title, content, category, priority, tags_json, is_archived, updated_at FROM notes WHERE id = ?",
+        [remote["id"]],
+    )
+    if not rows:
+        return
+    local = rows[0]
+    import time as _time
+    now = int(_time.time() * 1000)
+    await db.execute(
+        """INSERT INTO feishu_conflicts
+           (note_id, occurred_at, prev_title, prev_content, prev_category, prev_priority,
+            prev_tags_json, prev_is_archived, prev_updated_at, new_title, new_updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            remote["id"], now,
+            local["title"], local["content"], local["category"], local["priority"],
+            local["tags_json"] or "[]", int(local["is_archived"]), int(local["updated_at"] or 0),
+            remote.get("title", ""), int(remote.get("updated_at", 0)),
+        ],
+    )
+    # 不在这里 commit；调用方（_upsert_local_from_remote）的下一步 UPDATE 会一起 commit
+
+
+async def list_conflicts(only_unresolved: bool = True, limit: int = 50) -> list[dict]:
+    """返回冲突列表，附带当前 note 的最新 title 让用户判断哪条笔记。"""
+    db = await get_db()
+    where = "WHERE c.resolved_at IS NULL " if only_unresolved else ""
+    sql = (
+        f"SELECT c.*, n.title as note_title FROM feishu_conflicts c "
+        f"LEFT JOIN notes n ON n.id = c.note_id {where}"
+        f"ORDER BY c.occurred_at DESC LIMIT ?"
+    )
+    rows = await db.execute_fetchall(sql, [limit])
+    return [dict(r) for r in rows]
+
+
+async def resolve_conflict(conflict_id: int, choice: str) -> dict:
+    """choice='local' 把笔记内容回滚到 prev_* 快照；'remote' 仅标记接受。"""
+    if choice not in ("local", "remote"):
+        return {"ok": False, "message": "choice 必须是 local 或 remote"}
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM feishu_conflicts WHERE id = ? AND resolved_at IS NULL", [conflict_id]
+    )
+    if not rows:
+        return {"ok": False, "message": "冲突不存在或已解决"}
+    c = rows[0]
+    import time as _time
+    now = int(_time.time() * 1000)
+    if choice == "local":
+        # 回滚 note 到 prev_* 快照
+        from .markdown_format import default_color_for
+        color = default_color_for(c["prev_category"], c["prev_priority"])
+        await db.execute(
+            """UPDATE notes SET title = ?, content = ?, category = ?, priority = ?,
+               color_token = ?, tags_json = ?, is_archived = ?, updated_at = ?, status = 'LOCAL_ONLY'
+               WHERE id = ?""",
+            [
+                c["prev_title"], c["prev_content"], c["prev_category"], c["prev_priority"],
+                color, c["prev_tags_json"] or "[]", int(c["prev_is_archived"]),
+                now, c["note_id"],
+            ],
+        )
+        # 触发 push（让飞书 + WebDAV 也同步回旧版本）
+        asyncio.create_task(_trigger_push_safely(c["note_id"]))
+        try:
+            from .sync_orchestrator import push_single_note
+            asyncio.create_task(push_single_note(c["note_id"]))
+        except Exception:
+            pass
+    await db.execute(
+        "UPDATE feishu_conflicts SET resolved_at = ?, resolved_choice = ? WHERE id = ?",
+        [now, choice, conflict_id],
+    )
+    await db.commit()
+    return {"ok": True, "message": f"已解决（{choice}）", "note_id": c["note_id"]}
 
 
 async def push_all_active() -> dict:
