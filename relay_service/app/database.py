@@ -157,6 +157,15 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     if "attachments_json" not in cols:
         await db.execute("ALTER TABLE notes ADD COLUMN attachments_json TEXT DEFAULT '[]'")
 
+    # feishu_mappings 表（Phase 1 Step 2b：Ydrop ↔ Bitable record_id 映射）
+    await db.execute(
+        """CREATE TABLE IF NOT EXISTS feishu_mappings (
+            note_id TEXT PRIMARY KEY,
+            record_id TEXT NOT NULL,
+            last_synced_at INTEGER NOT NULL
+        )"""
+    )
+
 
 async def close_db() -> None:
     global _db

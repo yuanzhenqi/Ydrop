@@ -43,6 +43,18 @@ def _trigger_link_preview(note_id: str) -> None:
     asyncio.create_task(schedule_for_note(note_id))
 
 
+def _trigger_feishu_push(note_id: str) -> None:
+    """fire-and-forget：把笔记同步到飞书 Bitable。失败不影响主流程。"""
+    from .feishu_orchestrator import trigger_push
+    trigger_push(note_id)
+
+
+def _trigger_feishu_delete(note_id: str) -> None:
+    """fire-and-forget：从飞书删除该笔记对应的 record。"""
+    from .feishu_orchestrator import trigger_delete
+    trigger_delete(note_id)
+
+
 def _row_to_note(row) -> NoteResponse:
     # 兼容老 DB 没 link_previews_json / attachments_json 列的情况（_migrate 已加，但读 row 时仍可能 None）
     keys = row.keys() if hasattr(row, "keys") else []
@@ -176,6 +188,7 @@ async def create_note(body: NoteCreate):
     await db.commit()
 
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     _trigger_link_preview(note_id)
 
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
@@ -228,6 +241,7 @@ async def update_note(note_id: str, body: NoteUpdate):
     await db.commit()
 
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     # content 可能含新链接，重抓预览（worker 内部有 7 天 cache，不会浪费）
     if body.content is not None or body.title is not None:
         _trigger_link_preview(note_id)
@@ -248,6 +262,7 @@ async def archive_note(note_id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -264,6 +279,7 @@ async def unarchive_note(note_id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -281,6 +297,7 @@ async def trash_note(note_id: str):
     await db.commit()
     # trashed 的笔记，push_single_note 内部会识别并走 delete 分支
     _trigger_delete_remote(note_id)
+    _trigger_feishu_delete(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -297,6 +314,7 @@ async def restore_note(note_id: str):
         raise HTTPException(status_code=404, detail="Note not found")
     await db.commit()
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -337,6 +355,7 @@ async def restore_original_content(note_id: str):
     )
     await db.commit()
     _trigger_push(note_id)
+    _trigger_feishu_push(note_id)
     rows = await db.execute_fetchall("SELECT * FROM notes WHERE id = ?", [note_id])
     return _row_to_note(rows[0])
 
@@ -353,6 +372,8 @@ async def delete_note_permanently(note_id: str):
     await db.execute("DELETE FROM reminders WHERE note_id = ?", [note_id])
     await db.execute("INSERT OR REPLACE INTO tombstones (note_id, deleted_at) VALUES (?, ?)", [note_id, now])
     await db.commit()
+    # 同步从飞书删除该 record（fire-and-forget；mapping 不存在静默成功）
+    _trigger_feishu_delete(note_id)
     # 远端删除（在 notes 行已移除后，delete_remote_by_id 会走扫描兜底）
     if remote_path:
         # 直接删，不扫描

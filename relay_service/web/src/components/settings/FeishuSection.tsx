@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable } from '@/lib/api'
-import type { FeishuSettings, FeishuInitTableResult } from '@/lib/types'
+import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable, feishuPushAll } from '@/lib/api'
+import type { FeishuSettings, FeishuInitTableResult, FeishuPushAllResult } from '@/lib/types'
 import { SettingsSection } from './SettingsSection'
 import { SettingsField, TextInput } from './SettingsField'
 import { SettingsToggle } from './SettingsToggle'
@@ -29,6 +29,8 @@ export function FeishuSection({ onToast }: Props) {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; appName?: string } | null>(null)
   const [initResult, setInitResult] = useState<FeishuInitTableResult | null>(null)
   const [initing, setIniting] = useState(false)
+  const [pushing, setPushing] = useState(false)
+  const [pushResult, setPushResult] = useState<FeishuPushAllResult | null>(null)
 
   useEffect(() => {
     refresh()
@@ -97,6 +99,24 @@ export function FeishuSection({ onToast }: Props) {
       onToast('error', '初始化失败：' + (e instanceof Error ? e.message : String(e)))
     } finally {
       setIniting(false)
+    }
+  }
+
+  async function handlePushAll() {
+    setPushing(true)
+    setPushResult(null)
+    try {
+      const r = await feishuPushAll()
+      setPushResult(r)
+      if (r.ok) {
+        onToast(r.failed === 0 ? 'success' : 'error', r.message)
+      } else {
+        onToast('error', r.message || '推送失败')
+      }
+    } catch (e) {
+      onToast('error', '推送失败：' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setPushing(false)
     }
   }
 
@@ -237,6 +257,33 @@ export function FeishuSection({ onToast }: Props) {
                 </ul>
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* 一键推送已有笔记 — 用于首次接入或表结构改动后批量同步 */}
+      <div className="pt-3 mt-2 border-t space-y-2">
+        <div className="text-xs text-gray-500 leading-relaxed">
+          点「立即推送所有笔记」会把当前 inbox + archive 的所有笔记同步到飞书。
+          已经推过的会更新（按 ydrop_id 映射）；后续创建/编辑/归档/删除笔记自动触发推送，无需手动。
+        </div>
+        <button
+          onClick={handlePushAll}
+          disabled={pushing || !settings.enabled}
+          className="px-3 py-1.5 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+          title={!settings.enabled ? '请先启用飞书同步' : ''}
+        >
+          {pushing ? '推送中...' : '立即推送所有笔记到飞书'}
+        </button>
+        {pushResult && (
+          <div
+            className={`rounded-lg px-3 py-2 text-xs ${
+              pushResult.ok && pushResult.failed === 0
+                ? 'bg-emerald-50 text-emerald-700'
+                : 'bg-amber-50 text-amber-700'
+            }`}
+          >
+            {pushResult.message} (推送 {pushResult.pushed}，失败 {pushResult.failed})
           </div>
         )}
       </div>

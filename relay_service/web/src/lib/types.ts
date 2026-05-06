@@ -148,6 +148,13 @@ export interface FeishuInitTableResult {
   errors: { name: string; code: number; msg: string }[]
 }
 
+export interface FeishuPushAllResult {
+  ok: boolean
+  message: string
+  pushed: number
+  failed: number
+}
+
 export interface AppSettings {
   webdav: WebDavSettings
   ai: AiSettings

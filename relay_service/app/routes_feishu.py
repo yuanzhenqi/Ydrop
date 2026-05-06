@@ -62,6 +62,13 @@ class FeishuInitTableResult(BaseModel):
     errors: list[dict] = []
 
 
+class FeishuPushAllResult(BaseModel):
+    ok: bool
+    message: str = ""
+    pushed: int = 0
+    failed: int = 0
+
+
 # ─── Endpoints ───
 
 
@@ -180,6 +187,23 @@ async def init_ydrop_table():
         await client.close()
 
 
+@router.post("/sync/push-all", response_model=FeishuPushAllResult)
+async def push_all_to_feishu():
+    """把当前所有非回收站笔记一次性推到飞书 Bitable（首次接入用）。
+
+    内部调 feishu_orchestrator.push_all_active：每条笔记 create 或 update。
+    需要表已经初始化过 Ydrop schema（init-table）。
+    """
+    from .feishu_orchestrator import push_all_active
+    result = await push_all_active()
+    return FeishuPushAllResult(
+        ok=result.get("ok", False),
+        message=result.get("message", ""),
+        pushed=result.get("pushed", 0),
+        failed=result.get("failed", 0),
+    )
+
+
 def _diagnose_error_code(code: int) -> str:
     """把飞书常见错误码翻译成可执行的提示。"""
     return {
@@ -187,7 +211,7 @@ def _diagnose_error_code(code: int) -> str:
         99991668: "应用未启用，请到飞书开发者后台启用应用",
         99991672: "应用未开通多维表格权限。去开发者后台 → 权限管理 → 添加 bitable:app:readonly（或 bitable:app / base:app:read），然后版本管理 → 创建版本并发布",
         91402: "权限不足。请在「应用 → 权限管理」勾上 base:app:read 或 bitable:app:readonly",
-        91403: "应用未被多维表格授权。请在多维表格右上角『...』→ 添加应用 → 选你这个应用",
+        91403: "应用对该多维表格只有「查看」权限。请到多维表格右上角『...』→ 协作管理 → 把 Ydrop 应用的权限改成「可编辑」（或先移除再以「可编辑」身份重新添加）",
         1254000: "多维表格不存在或被删除",
         1254001: "app_token 格式不正确",
         1254002: "应用未授权访问该多维表格。在多维表格右上角『...』→ 添加应用 → 选你这个应用",
