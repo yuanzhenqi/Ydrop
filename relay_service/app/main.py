@@ -17,6 +17,7 @@ from .database import close_db, get_db
 from .models import AiAnalyzeRequest, AiAnalyzeResponse, DeleteResponse, HealthResponse, UploadResponse
 from . import settings_store
 from .routes_ai import router as ai_router
+from .routes_feishu import router as feishu_router
 from .routes_images import router as images_router
 from .routes_links import router as links_router
 from .routes_notes import router as notes_router
@@ -60,6 +61,7 @@ app.include_router(ai_router)
 app.include_router(links_router)
 app.include_router(images_router)
 app.include_router(settings_router)
+app.include_router(feishu_router)
 
 
 # ── 原有接口 ──

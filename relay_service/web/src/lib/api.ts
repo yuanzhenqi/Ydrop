@@ -1,4 +1,4 @@
-import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse } from './types'
+import type { Note, NoteListResponse, Reminder, ReminderListResponse, AiSuggestion, SyncStatus, AppSettings, SettingsUpdate, TestResult, ImageAnalyzeResponse, FeishuSettings, FeishuSettingsUpdate, FeishuTestResult } from './types'
 
 function getToken(): string {
   if (typeof window === 'undefined') return ''
@@ -293,4 +293,18 @@ export async function testWebDavConnection(): Promise<TestResult> {
 
 export async function testAiConnection(): Promise<TestResult> {
   return request<TestResult>('/api/settings/test/ai', { method: 'POST' })
+}
+
+// ── Feishu Bitable ──
+
+export async function fetchFeishuSettings(): Promise<FeishuSettings> {
+  return request<FeishuSettings>('/api/feishu/settings')
+}
+
+export async function updateFeishuSettings(update: FeishuSettingsUpdate): Promise<FeishuSettings> {
+  return request<FeishuSettings>('/api/feishu/settings', { method: 'PUT', body: JSON.stringify(update) })
+}
+
+export async function testFeishuConnection(): Promise<FeishuTestResult> {
+  return request<FeishuTestResult>('/api/feishu/test', { method: 'POST' })
 }

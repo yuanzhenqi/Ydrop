@@ -17,9 +17,10 @@ import { SettingsSection } from '@/components/settings/SettingsSection'
 import { SettingsField, TextInput, NumberSelect } from '@/components/settings/SettingsField'
 import { SettingsToggle } from '@/components/settings/SettingsToggle'
 import { TestButton } from '@/components/settings/TestButton'
-import { Settings, Key, RefreshCw, Cloud, Sparkles, CheckCircle2, XCircle, Save } from 'lucide-react'
+import { FeishuSection } from '@/components/settings/FeishuSection'
+import { Settings, Key, RefreshCw, Cloud, Sparkles, CheckCircle2, XCircle, Save, Table } from 'lucide-react'
 
-type Tab = 'general' | 'webdav' | 'ai'
+type Tab = 'general' | 'webdav' | 'ai' | 'feishu'
 
 const SYNC_INTERVAL_OPTIONS = [
   { value: 60, label: '1 分钟' },
@@ -196,6 +197,9 @@ export default function SettingsPage() {
         <TabBtn active={tab === 'ai'} onClick={() => setTab('ai')} icon={Sparkles}>
           AI 整理
           {appSettings?.server_info.ai_configured && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 ml-1" />}
+        </TabBtn>
+        <TabBtn active={tab === 'feishu'} onClick={() => setTab('feishu')} icon={Table}>
+          飞书 Bitable
         </TabBtn>
       </div>
 
@@ -456,6 +460,11 @@ export default function SettingsPage() {
             <TestButton onTest={testAiConnection} />
           </div>
         </SettingsSection>
+      )}
+
+      {/* 飞书 Bitable Tab */}
+      {tab === 'feishu' && (
+        <FeishuSection onToast={(type, message) => setToast({ type, message })} />
       )}
     </div>
   )

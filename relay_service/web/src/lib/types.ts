@@ -116,6 +116,30 @@ export interface ServerInfo {
   ai_configured: boolean
 }
 
+export interface FeishuSettings {
+  enabled: boolean
+  app_id: string
+  secret_set: boolean
+  app_token: string
+  table_id: string
+}
+
+export interface FeishuSettingsUpdate {
+  enabled?: boolean
+  app_id?: string
+  app_secret?: string  // 留空 = 不改
+  app_token?: string
+  table_id?: string
+}
+
+export interface FeishuTestResult {
+  ok: boolean
+  message: string
+  app_name?: string
+  revision?: number
+  time_zone?: string
+}
+
 export interface AppSettings {
   webdav: WebDavSettings
   ai: AiSettings
