@@ -271,6 +271,9 @@ async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
     """把从 Bitable 拉回来的 dict 写进 SQLite notes 表。
     - is_new=True：INSERT，需要补 source/color_token/status 等默认值
     - is_new=False：仅更新可变字段（title/content/category/priority/tags/is_archived/updated_at）
+
+    写完后 fire-and-forget 调 WebDAV push，让 Android 端几秒内就能拉到（不依赖
+    sync_loop 5min 兜底）。三端互通的关键链路。
     """
     from .markdown_format import default_color_for
     db = await get_db()
@@ -293,7 +296,6 @@ async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
             ],
         )
     else:
-        from .markdown_format import default_color_for
         color = default_color_for(remote["category"], remote["priority"])
         await db.execute(
             """UPDATE notes SET title = ?, content = ?, category = ?, priority = ?,
@@ -310,6 +312,12 @@ async def _upsert_local_from_remote(remote: dict, is_new: bool) -> None:
                 remote["id"],
             ],
         )
+    # 飞书改了 → 立即推 WebDAV，让 Android 端秒级感知（否则要等 sync_loop 5min 兜底）
+    try:
+        from .sync_orchestrator import push_single_note
+        asyncio.create_task(push_single_note(remote["id"]))
+    except Exception as e:
+        logger.warning("fire WebDAV push after feishu pull failed note=%s: %s", remote["id"], e)
 
 
 async def push_all_active() -> dict:
@@ -354,3 +362,35 @@ async def _trigger_delete_safely(note_id: str) -> None:
         await delete_note(note_id)
     except Exception as e:
         logger.warning("trigger_delete exception note=%s: %s", note_id, e)
+
+
+# ─── 定时反向拉 loop ───
+
+
+async def feishu_sync_loop() -> None:
+    """后台循环：每 N 秒（settings.feishu.sync_interval）从 Bitable 拉一次。
+    enabled=false 或 sync_interval=0 时短路（每轮检查，支持运行时切换）。"""
+    logger.info("Feishu sync loop started")
+    while True:
+        try:
+            cfg = await settings_store.get_feishu_config()
+            interval = int(cfg.get("sync_interval", 300) or 300)
+            if not cfg.get("enabled") or interval <= 0:
+                # 即使禁用也保持一个心跳周期（30s）轮询配置变化，让用户开启后能尽快生效
+                await asyncio.sleep(30)
+                continue
+            await asyncio.sleep(interval)
+            # sleep 完再次检查 enabled，避免运行时被关掉还跑
+            cfg = await settings_store.get_feishu_config()
+            if not cfg.get("enabled"):
+                continue
+            try:
+                result = await pull_from_feishu()
+                logger.info("feishu auto-pull: %s", result.get("message", ""))
+            except Exception as e:
+                logger.warning("feishu auto-pull failed: %s", e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("feishu_sync_loop unexpected error: %s", e, exc_info=True)
+            await asyncio.sleep(60)

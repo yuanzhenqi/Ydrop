@@ -198,14 +198,17 @@ async def get_webdav_config() -> dict[str, Any]:
 async def get_feishu_config() -> dict[str, Any]:
     """飞书多维表格双向同步配置。app_id/app_secret 是自建应用凭据；
     app_token 是要同步的具体 Bitable 应用 ID（一个文档一个）；table_id 是该 Bitable 内具体一张表。
-    enabled=False 时整个 connector 不启动，所有 sync 路径短路。"""
+    enabled=False 时整个 connector 不启动，所有 sync 路径短路。
+    sync_interval：定时反向拉间隔（秒，默认 300）；设为 0 表示禁用定时只走手动。"""
     enabled = await get_value("feishu.enabled", "bool")
+    interval = await get_value("feishu.sync_interval", "int")
     return {
         "enabled": enabled if enabled is not None else False,
         "app_id": await get_value("feishu.app_id", "str") or "",
         "app_secret": await get_value("feishu.app_secret", "str") or "",
         "app_token": await get_value("feishu.app_token", "str") or "",
         "table_id": await get_value("feishu.table_id", "str") or "",
+        "sync_interval": int(interval) if interval is not None else 300,
     }
 
 

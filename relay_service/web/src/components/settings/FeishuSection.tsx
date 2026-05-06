@@ -190,12 +190,30 @@ export function FeishuSection({ onToast }: Props) {
 
       <SettingsField
         label="Table ID（具体表）"
-        hint="同一个多维表格里可以有多张表。Step 1 暂不验证此字段；后续同步会用到"
+        hint="同一个多维表格里可以有多张表。从 URL 里复制 ?table=tblxxxx 那段；带 &view= 后缀也行（自动剥）"
       >
         <TextInput
           value={draft.table_id}
           onChange={(v) => setDraft((d) => ({ ...d, table_id: v }))}
           placeholder="tblxxxxxxxxxxxxxxxxx"
+        />
+      </SettingsField>
+
+      <SettingsField
+        label="自动拉取间隔（秒）"
+        hint="后台每 N 秒从飞书拉一次。最小 60，0 = 禁用定时只走手动。默认 300（5 分钟）"
+      >
+        <input
+          type="number"
+          min={0}
+          max={86400}
+          value={settings.sync_interval ?? 300}
+          onChange={(e) => {
+            const v = Number(e.target.value || 0)
+            setSettings({ ...settings, sync_interval: v })
+            save({ sync_interval: v })
+          }}
+          className="w-32 text-sm border rounded-lg px-2 py-1.5 outline-none focus:border-emerald-400"
         />
       </SettingsField>
 

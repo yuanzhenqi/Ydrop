@@ -33,6 +33,7 @@ class FeishuSettings(BaseModel):
     secret_set: bool = False
     app_token: str = ""
     table_id: str = ""
+    sync_interval: int = 300
 
 
 class FeishuSettingsUpdate(BaseModel):
@@ -44,6 +45,7 @@ class FeishuSettingsUpdate(BaseModel):
     app_secret: Optional[str] = None
     app_token: Optional[str] = None
     table_id: Optional[str] = None
+    sync_interval: Optional[int] = None
 
 
 class FeishuTestResult(BaseModel):
@@ -90,6 +92,7 @@ async def get_feishu_settings():
         secret_set=bool(cfg["app_secret"]),
         app_token=cfg["app_token"],
         table_id=cfg["table_id"],
+        sync_interval=cfg.get("sync_interval", 300),
     )
 
 
@@ -117,6 +120,14 @@ async def update_feishu_settings(body: FeishuSettingsUpdate):
         updates["feishu.app_token"] = _sanitize_id(body.app_token)
     if body.table_id is not None:
         updates["feishu.table_id"] = _sanitize_id(body.table_id)
+    if body.sync_interval is not None:
+        # 0 = 仅手动；下限 60s 防止过于频繁压垮飞书 API
+        v = int(body.sync_interval)
+        if v < 0:
+            v = 0
+        elif 0 < v < 60:
+            v = 60
+        updates["feishu.sync_interval"] = v
     if updates:
         await settings_store.set_many(updates)
     return await get_feishu_settings()

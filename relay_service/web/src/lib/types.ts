@@ -122,6 +122,7 @@ export interface FeishuSettings {
   secret_set: boolean
   app_token: string
   table_id: string
+  sync_interval: number  // 秒；0=仅手动
 }
 
 export interface FeishuSettingsUpdate {
@@ -130,6 +131,7 @@ export interface FeishuSettingsUpdate {
   app_secret?: string  // 留空 = 不改
   app_token?: string
   table_id?: string
+  sync_interval?: number
 }
 
 export interface FeishuTestResult {

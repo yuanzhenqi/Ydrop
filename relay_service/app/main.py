@@ -34,11 +34,14 @@ async def lifespan(_: FastAPI):
     await settings_store.init_and_migrate()
     cleanup_task = asyncio.create_task(cleanup_loop())
     sync_task = asyncio.create_task(sync_loop())
+    from .feishu_orchestrator import feishu_sync_loop
+    feishu_task = asyncio.create_task(feishu_sync_loop())
     try:
         yield
     finally:
         cleanup_task.cancel()
         sync_task.cancel()
+        feishu_task.cancel()
         await close_db()
 
 
