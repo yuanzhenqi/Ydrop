@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection } from '@/lib/api'
-import type { FeishuSettings } from '@/lib/types'
+import { fetchFeishuSettings, updateFeishuSettings, testFeishuConnection, initFeishuTable } from '@/lib/api'
+import type { FeishuSettings, FeishuInitTableResult } from '@/lib/types'
 import { SettingsSection } from './SettingsSection'
 import { SettingsField, TextInput } from './SettingsField'
 import { SettingsToggle } from './SettingsToggle'
@@ -27,6 +27,8 @@ export function FeishuSection({ onToast }: Props) {
   const [draft, setDraft] = useState({ app_id: '', app_secret: '', app_token: '', table_id: '' })
   const [saving, setSaving] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; appName?: string } | null>(null)
+  const [initResult, setInitResult] = useState<FeishuInitTableResult | null>(null)
+  const [initing, setIniting] = useState(false)
 
   useEffect(() => {
     refresh()
@@ -76,6 +78,25 @@ export function FeishuSection({ onToast }: Props) {
       setTestResult({ ok: false, message: msg })
       onToast('error', '测试失败：' + msg)
       return { ok: false, message: msg }
+    }
+  }
+
+  async function handleInitTable() {
+    setIniting(true)
+    try {
+      const r = await initFeishuTable()
+      setInitResult(r)
+      if (r.ok && r.created.length === 0 && r.skipped.length > 0) {
+        onToast('success', '所有 Ydrop 标准列已存在，无需新建')
+      } else if (r.ok) {
+        onToast('success', `初始化完成：${r.message}`)
+      } else {
+        onToast('error', `初始化部分失败：${r.message}`)
+      }
+    } catch (e) {
+      onToast('error', '初始化失败：' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setIniting(false)
     }
   }
 
@@ -171,6 +192,54 @@ export function FeishuSection({ onToast }: Props) {
           </div>
         </div>
       )}
+
+      {/* 初始化表结构 — 在 Bitable 里建好 9 列标准 schema（同名列跳过） */}
+      <div className="pt-3 mt-2 border-t space-y-2">
+        <div className="text-xs text-gray-500 leading-relaxed">
+          点「初始化 Ydrop 表结构」会在你这张 Bitable 自动创建 Ydrop 需要的 9 列：标题 / 内容 / 类型 / 优先级 / 标签 / 已归档 / 创建时间 / 更新时间 / ydrop_id。
+          已有同名列直接跳过，不会改你已有的列结构。
+          <br />
+          <span className="text-amber-600">⚠ 需要应用拥有 <code>bitable:app</code> 写权限（仅 readonly 不够）。</span>
+        </div>
+        <button
+          onClick={handleInitTable}
+          disabled={initing}
+          className="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {initing ? '初始化中...' : '初始化 Ydrop 表结构'}
+        </button>
+
+        {initResult && (
+          <div
+            className={`rounded-lg px-3 py-2 text-xs space-y-1 ${
+              initResult.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+            }`}
+          >
+            {initResult.created.length > 0 && (
+              <div>
+                ✓ 新建：{initResult.created.join('、')}
+              </div>
+            )}
+            {initResult.skipped.length > 0 && (
+              <div className="text-gray-500">
+                · 跳过（已有）：{initResult.skipped.join('、')}
+              </div>
+            )}
+            {initResult.errors.length > 0 && (
+              <div className="text-red-600">
+                ✗ 失败：
+                <ul className="list-disc list-inside">
+                  {initResult.errors.map((err, i) => (
+                    <li key={i}>
+                      <strong>{err.name}</strong> (code={err.code})：{err.msg}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </SettingsSection>
   )
 }

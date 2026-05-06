@@ -20,6 +20,42 @@ logger = logging.getLogger("feishu_client")
 DEFAULT_BASE = "https://open.feishu.cn"
 TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal"
 APP_INFO_PATH = "/open-apis/bitable/v1/apps/{app_token}"
+TABLES_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables"
+FIELDS_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+RECORDS_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
+RECORD_ITEM_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}"
+
+# ─── Ydrop 在 Bitable 里的标准列 schema ───
+# 选项 / 类型尽量与 markdown_format.py 保持一致（中文 label）。
+# 单选 color 0-54，自由发挥；多选 / 复选框 / 日期不需要预设值。
+
+_CATEGORY_OPTIONS = [
+    {"name": "普通", "color": 0},
+    {"name": "待办", "color": 1},
+    {"name": "任务", "color": 2},
+    {"name": "提醒", "color": 3},
+]
+
+_PRIORITY_OPTIONS = [
+    {"name": "低", "color": 5},
+    {"name": "中", "color": 0},
+    {"name": "高", "color": 6},
+    {"name": "紧急", "color": 4},
+]
+
+# Ydrop 标准字段 schema。键名是中文显示名，值是 create-field 请求体（去掉 field_name）。
+# 顺序固定：第一项会作为 primary 主索引（标题）。
+YDROP_SCHEMA: list[dict] = [
+    {"field_name": "标题", "type": 1},  # 文本 — 主索引
+    {"field_name": "内容", "type": 1},  # 多行文本（type=1 即可，UI 自适应换行）
+    {"field_name": "类型", "type": 3, "property": {"options": _CATEGORY_OPTIONS}},
+    {"field_name": "优先级", "type": 3, "property": {"options": _PRIORITY_OPTIONS}},
+    {"field_name": "标签", "type": 4},  # 多选；不预设 options，运行时可以传新值
+    {"field_name": "已归档", "type": 7},  # 复选框
+    {"field_name": "创建时间", "type": 5},  # 日期（毫秒时间戳）
+    {"field_name": "更新时间", "type": 5},
+    {"field_name": "ydrop_id", "type": 1},  # 隐藏 ID 映射主键
+]
 
 # 飞书 token 实测 max 7200s。剩余 < REFRESH_AHEAD_S 时主动 refresh，避免请求中途过期被 99991663 拒。
 REFRESH_AHEAD_S = 30 * 60  # 30 分钟
@@ -135,6 +171,151 @@ class FeishuClient:
         if feishu_code != 0:
             raise FeishuError(feishu_code, feishu_msg or "unknown", body_preview(r.text))
         return data.get("data") or {}
+
+    # ─── Bitable: helpers (POST/PUT/DELETE) ───
+
+    async def _bearer_post(self, path: str, body: dict | None = None) -> dict:
+        return await self._bearer_call("POST", path, body)
+
+    async def _bearer_put(self, path: str, body: dict | None = None) -> dict:
+        return await self._bearer_call("PUT", path, body)
+
+    async def _bearer_delete(self, path: str) -> dict:
+        return await self._bearer_call("DELETE", path, None)
+
+    async def _bearer_call(self, method: str, path: str, body: dict | None) -> dict:
+        token = await self.get_tenant_access_token()
+        client = await self._get_client()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        r = await client.request(method, self.base_url + path, headers=headers, json=body if body is not None else {})
+        if r.status_code == 401:
+            token = await self.get_tenant_access_token(force_refresh=True)
+            headers["Authorization"] = f"Bearer {token}"
+            r = await client.request(method, self.base_url + path, headers=headers, json=body if body is not None else {})
+        feishu_code = -1
+        feishu_msg = ""
+        try:
+            data = r.json()
+            feishu_code = data.get("code", -1) if isinstance(data, dict) else -1
+            feishu_msg = data.get("msg", "") if isinstance(data, dict) else ""
+        except Exception:
+            data = {}
+        if r.status_code != 200:
+            if feishu_code > 0:
+                raise FeishuError(feishu_code, feishu_msg or f"HTTP {r.status_code}", body_preview(r.text))
+            raise FeishuError(r.status_code, f"HTTP {r.status_code}", body_preview(r.text))
+        if feishu_code != 0:
+            raise FeishuError(feishu_code, feishu_msg or "unknown", body_preview(r.text))
+        return data.get("data") or {}
+
+    # ─── Bitable: 表与字段管理 ───
+
+    async def list_tables(self, app_token: str) -> list[dict]:
+        """列出多维表格里所有的 table。诊断 table_id 是否正确时用。"""
+        out: list[dict] = []
+        page_token = ""
+        while True:
+            qs = "?page_size=100" + (f"&page_token={page_token}" if page_token else "")
+            data = await self._bearer_get(TABLES_PATH.format(app_token=app_token) + qs)
+            out.extend(data.get("items") or [])
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token") or ""
+            if not page_token:
+                break
+        return out
+
+    async def list_fields(self, app_token: str, table_id: str) -> list[dict]:
+        """列出表的所有字段（自动翻页）。"""
+        out: list[dict] = []
+        page_token = ""
+        while True:
+            qs = "?page_size=100" + (f"&page_token={page_token}" if page_token else "")
+            data = await self._bearer_get(FIELDS_PATH.format(app_token=app_token, table_id=table_id) + qs)
+            items = data.get("items") or []
+            out.extend(items)
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token") or ""
+            if not page_token:
+                break
+        return out
+
+    async def create_field(self, app_token: str, table_id: str, field_def: dict) -> dict:
+        """创建一个字段。field_def 直接是 create_field 的请求体（含 field_name/type/property）。"""
+        return await self._bearer_post(
+            FIELDS_PATH.format(app_token=app_token, table_id=table_id), field_def
+        )
+
+    async def init_ydrop_table(self, app_token: str, table_id: str) -> dict:
+        """按 YDROP_SCHEMA 把缺失的列建出来。已有同名列直接跳过（不验证类型，避免误判）。
+
+        返回 {created: [name], skipped: [name], errors: [{name, msg}]}。
+        """
+        try:
+            existing = await self.list_fields(app_token, table_id)
+        except FeishuError as e:
+            # TableIdNotFound 时帮用户列出实际能看到的 table_id，方便定位
+            if e.code in (1254041, 1254040):
+                try:
+                    tables = await self.list_tables(app_token)
+                    table_brief = ", ".join(
+                        f"{t.get('table_id','?')}({t.get('name','')})" for t in tables[:6]
+                    )
+                    hint = (
+                        f"table_id 不存在或应用没访问权限。"
+                        f"该应用能看到的 table 有：{table_brief or '(空)'}"
+                    )
+                    raise FeishuError(e.code, e.msg, hint) from e
+                except FeishuError:
+                    raise
+                except Exception:
+                    raise e
+            raise FeishuError(e.code, e.msg, "无法列出现有字段，请先确认 bitable:app 写权限") from e
+        existing_names = {f.get("field_name", "") for f in existing}
+
+        created, skipped, errors = [], [], []
+        for spec in YDROP_SCHEMA:
+            name = spec["field_name"]
+            if name in existing_names:
+                skipped.append(name)
+                continue
+            try:
+                await self.create_field(app_token, table_id, spec)
+                created.append(name)
+            except FeishuError as e:
+                errors.append({"name": name, "code": e.code, "msg": str(e)})
+        return {"created": created, "skipped": skipped, "errors": errors}
+
+    # ─── Bitable: record CRUD ───
+
+    async def create_record(self, app_token: str, table_id: str, fields: dict) -> dict:
+        """创建一条 record。返回 {record_id, fields, ...}"""
+        data = await self._bearer_post(
+            RECORDS_PATH.format(app_token=app_token, table_id=table_id),
+            {"fields": fields},
+        )
+        return data.get("record") or {}
+
+    async def update_record(self, app_token: str, table_id: str, record_id: str, fields: dict) -> dict:
+        data = await self._bearer_put(
+            RECORD_ITEM_PATH.format(app_token=app_token, table_id=table_id, record_id=record_id),
+            {"fields": fields},
+        )
+        return data.get("record") or {}
+
+    async def delete_record(self, app_token: str, table_id: str, record_id: str) -> bool:
+        """删除 record。404 视为成功（已经不在了）。"""
+        try:
+            data = await self._bearer_delete(
+                RECORD_ITEM_PATH.format(app_token=app_token, table_id=table_id, record_id=record_id)
+            )
+            return bool(data.get("deleted", True))
+        except FeishuError as e:
+            if e.code in (1254043, 1254040):  # record 不存在 / table 不存在
+                logger.info("delete_record: record %s already gone", record_id)
+                return True
+            raise
 
     # ─── Bitable: 联通测试 ───
 

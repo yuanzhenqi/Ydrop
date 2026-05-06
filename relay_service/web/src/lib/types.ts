@@ -140,6 +140,14 @@ export interface FeishuTestResult {
   time_zone?: string
 }
 
+export interface FeishuInitTableResult {
+  ok: boolean
+  message: string
+  created: string[]
+  skipped: string[]
+  errors: { name: string; code: number; msg: string }[]
+}
+
 export interface AppSettings {
   webdav: WebDavSettings
   ai: AiSettings

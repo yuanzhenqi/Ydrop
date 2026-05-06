@@ -54,6 +54,14 @@ class FeishuTestResult(BaseModel):
     time_zone: str = ""
 
 
+class FeishuInitTableResult(BaseModel):
+    ok: bool
+    message: str = ""
+    created: list[str] = []
+    skipped: list[str] = []
+    errors: list[dict] = []
+
+
 # ─── Endpoints ───
 
 
@@ -69,20 +77,30 @@ async def get_feishu_settings():
     )
 
 
+def _sanitize_id(raw: str) -> str:
+    """剥掉用户从 URL 里复制时常带的 &view=... ?... # 等后缀。
+    table_id / app_token 都是纯字母数字，遇到 & ? # 就截断。"""
+    s = raw.strip()
+    for sep in ("&", "?", "#", " ", "\n"):
+        if sep in s:
+            s = s.split(sep, 1)[0]
+    return s
+
+
 @router.put("/settings", response_model=FeishuSettings)
 async def update_feishu_settings(body: FeishuSettingsUpdate):
     updates: dict = {}
     if body.enabled is not None:
         updates["feishu.enabled"] = bool(body.enabled)
     if body.app_id is not None:
-        updates["feishu.app_id"] = body.app_id.strip()
+        updates["feishu.app_id"] = _sanitize_id(body.app_id)
     # 空字符串视作不动；要清空就传 enabled=false 即可让 connector 短路
     if body.app_secret:
         updates["feishu.app_secret"] = body.app_secret.strip()
     if body.app_token is not None:
-        updates["feishu.app_token"] = body.app_token.strip()
+        updates["feishu.app_token"] = _sanitize_id(body.app_token)
     if body.table_id is not None:
-        updates["feishu.table_id"] = body.table_id.strip()
+        updates["feishu.table_id"] = _sanitize_id(body.table_id)
     if updates:
         await settings_store.set_many(updates)
     return await get_feishu_settings()
@@ -116,6 +134,48 @@ async def test_feishu_connection():
     except Exception as e:
         logger.error("feishu test unexpected error: %s", e, exc_info=True)
         return FeishuTestResult(ok=False, message=f"未预期错误：{e}")
+    finally:
+        await client.close()
+
+
+@router.post("/init-table", response_model=FeishuInitTableResult)
+async def init_ydrop_table():
+    """按 YDROP_SCHEMA 把缺失的标准列在用户的 Bitable 里建出来。同名列跳过、不会改用户已有列。
+
+    需要 app 拥有 bitable:app 写权限（仅 readonly 不够）。
+    """
+    cfg = await settings_store.get_feishu_config()
+    if not cfg["app_id"] or not cfg["app_secret"]:
+        return FeishuInitTableResult(ok=False, message="缺少 app_id 或 app_secret")
+    if not cfg["app_token"] or not cfg["table_id"]:
+        return FeishuInitTableResult(ok=False, message="缺少 app_token 或 table_id")
+
+    client = FeishuClient(app_id=cfg["app_id"], app_secret=cfg["app_secret"])
+    try:
+        result = await client.init_ydrop_table(cfg["app_token"], cfg["table_id"])
+        # 任一字段创建失败也认为整体 ok=true，但带错误清单让用户看
+        msg_parts = []
+        if result["created"]:
+            msg_parts.append(f"已建 {len(result['created'])} 列：{', '.join(result['created'])}")
+        if result["skipped"]:
+            msg_parts.append(f"跳过 {len(result['skipped'])} 列已存在：{', '.join(result['skipped'])}")
+        if result["errors"]:
+            err_brief = ", ".join(f"{e['name']}({e['code']})" for e in result["errors"])
+            msg_parts.append(f"⚠ {len(result['errors'])} 列建失败：{err_brief}")
+        return FeishuInitTableResult(
+            ok=not result["errors"],
+            message=" / ".join(msg_parts) or "无变更",
+            created=result["created"],
+            skipped=result["skipped"],
+            errors=result["errors"],
+        )
+    except FeishuError as e:
+        logger.warning("feishu init_ydrop_table failed: %s", e)
+        hint = _diagnose_error_code(e.code)
+        return FeishuInitTableResult(ok=False, message=f"{e}（{hint}）" if hint else str(e))
+    except Exception as e:
+        logger.error("feishu init_ydrop_table unexpected: %s", e, exc_info=True)
+        return FeishuInitTableResult(ok=False, message=f"未预期错误：{e}")
     finally:
         await client.close()
 
