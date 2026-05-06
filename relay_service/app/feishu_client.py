@@ -118,11 +118,22 @@ class FeishuClient:
                 self.base_url + path,
                 headers={"Authorization": f"Bearer {token}"},
             )
+        # 飞书在 4xx 也会返回 JSON body 含真正的业务 code（比如 400 + code=99991672 = 缺权限）。
+        # 优先从 body 解析飞书自己的 code/msg，HTTP status 退到次要位置——否则错误诊断映射全部失效。
+        feishu_code = -1
+        feishu_msg = ""
+        try:
+            data = r.json()
+            feishu_code = data.get("code", -1) if isinstance(data, dict) else -1
+            feishu_msg = data.get("msg", "") if isinstance(data, dict) else ""
+        except Exception:
+            data = {}
         if r.status_code != 200:
+            if feishu_code > 0:
+                raise FeishuError(feishu_code, feishu_msg or f"HTTP {r.status_code}", body_preview(r.text))
             raise FeishuError(r.status_code, f"HTTP {r.status_code}", body_preview(r.text))
-        data = r.json()
-        if data.get("code", -1) != 0:
-            raise FeishuError(data.get("code", -1), data.get("msg", "unknown"), body_preview(r.text))
+        if feishu_code != 0:
+            raise FeishuError(feishu_code, feishu_msg or "unknown", body_preview(r.text))
         return data.get("data") or {}
 
     # ─── Bitable: 联通测试 ───
