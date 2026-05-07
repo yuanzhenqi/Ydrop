@@ -336,26 +336,41 @@ async def pull_from_feishu() -> dict:
             errors.append(f"处理 record={rec.get('record_id','?')} 异常：{e}")
             logger.error("pull_from_feishu record failed: %s", e, exc_info=True)
 
-    # 远端少了的 mapping → 本地移回收站（用户在 Bitable 删 record 的语义）
-    rows = await db.execute_fetchall("SELECT note_id, record_id FROM feishu_mappings")
-    for row in rows:
-        if row["record_id"] not in seen_record_ids:
-            try:
-                now = int(asyncio.get_event_loop().time() * 1000)
-                # 用 SQLite 时间戳一致，避免循环引入 time
-                import time as _time
-                now = int(_time.time() * 1000)
-                await db.execute(
-                    "UPDATE notes SET is_trashed = 1, trashed_at = ?, updated_at = ?, status = 'LOCAL_ONLY' "
-                    "WHERE id = ? AND is_trashed = 0",
-                    [now, now, row["note_id"]],
+    # 远端少了的 mapping → 本地移回收站（用户在 Bitable 删 record 的语义）。
+    # 关键：list_records 和 push_note 之间可能有竞态（飞书内部读写有延迟，刚 push 的
+    # record 不一定立刻出现在 list 里），导致**误判**远端缺失而把好笔记 trash。
+    # 修：对每条候选 trash 先 GET 单条 record 验证，真的 404 才 trash。
+    import time as _time
+    rows = await db.execute_fetchall("SELECT note_id, record_id, last_synced_at FROM feishu_mappings")
+    candidates = [row for row in rows if row["record_id"] not in seen_record_ids]
+    if candidates:
+        logger.info("pull_from_feishu: %d candidates not in remote list, verifying...", len(candidates))
+    for row in candidates:
+        try:
+            # 二次确认：单条 GET。get_record 会在 1254043/1254040 时返回 None
+            still_missing = (await client.get_record(cfg["app_token"], cfg["table_id"], row["record_id"])) is None
+            if not still_missing:
+                # 实际上 record 还在，list 漏了一条（飞书读写延迟 / 翻页失误）。跳过 trash。
+                logger.info(
+                    "pull_from_feishu: false-positive missing record=%s, skip trash note=%s",
+                    row["record_id"], row["note_id"][:8],
                 )
-                if db.total_changes > 0:
-                    trashed_local += 1
-                # mapping 也清掉，下次再创建会走 create 分支
-                await db.execute("DELETE FROM feishu_mappings WHERE note_id = ?", [row["note_id"]])
-            except Exception as e:
-                errors.append(f"trash 本地 note={row['note_id']} 失败：{e}")
+                continue
+            now = int(_time.time() * 1000)
+            await db.execute(
+                "UPDATE notes SET is_trashed = 1, trashed_at = ?, updated_at = ?, status = 'LOCAL_ONLY' "
+                "WHERE id = ? AND is_trashed = 0",
+                [now, now, row["note_id"]],
+            )
+            if db.total_changes > 0:
+                trashed_local += 1
+                logger.info("pull_from_feishu: trashed local note=%s (record=%s confirmed gone)",
+                            row["note_id"][:8], row["record_id"])
+            # mapping 也清掉，下次再创建会走 create 分支
+            await db.execute("DELETE FROM feishu_mappings WHERE note_id = ?", [row["note_id"]])
+        except Exception as e:
+            errors.append(f"trash 本地 note={row['note_id']} 失败：{e}")
+            logger.warning("pull_from_feishu trash check failed note=%s: %s", row["note_id"], e)
     await db.commit()
     await client.close()
 

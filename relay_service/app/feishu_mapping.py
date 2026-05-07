@@ -85,6 +85,8 @@ def bitable_fields_to_note_dict(fields: dict, record_id: str, last_modified_ms: 
     is_archived、created_at、updated_at。调用方负责把它写进 SQLite。
     last_modified_ms 由调用方从 record.last_modified_time 传入（毫秒）。
     """
+    import time as _time
+    now_ms = int(_time.time() * 1000)
     title = _coerce_text(fields.get("标题")).strip()
     content = _coerce_text(fields.get("内容"))
     category_label = _coerce_select_label(fields.get("类型"))
@@ -92,8 +94,15 @@ def bitable_fields_to_note_dict(fields: dict, record_id: str, last_modified_ms: 
     tags = _coerce_multi_select(fields.get("标签"))
     is_archived = bool(fields.get("已归档") or False)
     created_at_raw = fields.get("创建时间")
-    created_at = int(created_at_raw) if isinstance(created_at_raw, (int, float)) else last_modified_ms
-    updated_at = last_modified_ms
+    # 多重 fallback：用户填的"创建时间"列 → record.last_modified_time → 当下。
+    # 防止飞书新建 record 不带任何时间字段时本地 created_at=0 → 文件名变成 1970-01-01。
+    if isinstance(created_at_raw, (int, float)) and created_at_raw > 0:
+        created_at = int(created_at_raw)
+    elif last_modified_ms > 0:
+        created_at = last_modified_ms
+    else:
+        created_at = now_ms
+    updated_at = last_modified_ms if last_modified_ms > 0 else now_ms
     ydrop_id = _coerce_text(fields.get("ydrop_id")).strip()
 
     return {
