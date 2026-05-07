@@ -237,6 +237,28 @@ async def init_ydrop_table():
         await client.close()
 
 
+@router.post("/debug/push-note/{note_id}")
+async def debug_push_note(note_id: str):
+    """诊断用：手动把一条笔记 push 到飞书，返回详细结果。"""
+    from .feishu_orchestrator import push_note, _get_mapping_full, _load_note_dict
+    note = await _load_note_dict(note_id)
+    if note is None:
+        return {"ok": False, "message": f"本地找不到 note {note_id}"}
+    mapping_before = await _get_mapping_full(note_id)
+    ok = await push_note(note_id)
+    mapping_after = await _get_mapping_full(note_id)
+    return {
+        "ok": ok,
+        "note_id": note_id,
+        "title": note.get("title", ""),
+        "category": note.get("category", ""),
+        "is_archived": note.get("is_archived", False),
+        "is_trashed": note.get("is_trashed", False),
+        "mapping_before": mapping_before,
+        "mapping_after": mapping_after,
+    }
+
+
 @router.get("/conflicts", response_model=list[FeishuConflictItem])
 async def list_feishu_conflicts(only_unresolved: bool = True, limit: int = 50):
     """列出从飞书拉取时被覆盖的本地版本快照。默认只看未解决的。"""

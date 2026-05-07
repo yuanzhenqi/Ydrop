@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +9,13 @@ from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+# 把同步链路的关键日志（sync / feishu_sync / feishu_webhook 等）拉到 INFO 级别，
+# 方便排查"Android 改了 → 飞书没动"这类断点问题。
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
 
 from .ai import analyze_note
 from .auth import require_relay_token

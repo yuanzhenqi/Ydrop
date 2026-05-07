@@ -280,6 +280,7 @@ def _trigger_feishu_after_webdav_pull(note_id: str) -> None:
     fire-and-forget，失败不阻塞 sync 主流程。"""
     try:
         from .feishu_orchestrator import trigger_push as _ft
+        logger.info("FEISHU TRIGGER after webdav pull note=%s", note_id[:8])
         _ft(note_id)
     except Exception as e:
         logger.warning("feishu trigger after webdav pull failed note=%s: %s", note_id, e)

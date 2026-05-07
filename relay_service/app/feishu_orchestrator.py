@@ -50,6 +50,23 @@ async def _get_mapping(note_id: str) -> Optional[str]:
     return rows[0]["record_id"] if rows else None
 
 
+async def _get_mapping_full(note_id: str) -> Optional[dict]:
+    """同 _get_mapping 但额外返回 last_synced_at，给"是否需要拉"判定用。"""
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT record_id, last_synced_at FROM feishu_mappings WHERE note_id = ?", [note_id]
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def _get_mapping_by_record(record_id: str) -> Optional[dict]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT note_id, last_synced_at FROM feishu_mappings WHERE record_id = ?", [record_id]
+    )
+    return dict(rows[0]) if rows else None
+
+
 async def _save_mapping(note_id: str, record_id: str) -> None:
     db = await get_db()
     now = int(time.time() * 1000)
@@ -232,12 +249,16 @@ async def pull_one_record(record_id: str) -> dict:
         local = await _load_note_dict(ydrop_id)
         if local is None:
             return {"ok": True, "action": "noop", "message": "本地笔记不存在（可能已彻底删）"}
-        if remote["updated_at"] > local["updated_at"]:
+        # 关键决策：远端 updated_at > 上次同步时间 = 远端有新改动需要拉。
+        # 不是与本地 updated_at 比 — 否则 web 端在飞书之后改一次，飞书后续的改就再也拉不到了。
+        mapping = await _get_mapping_full(ydrop_id)
+        last_synced = mapping.get("last_synced_at", 0) if mapping else 0
+        if remote["updated_at"] > last_synced:
             await _upsert_local_from_remote(remote, is_new=False)
             await _save_mapping(ydrop_id, record_id)
             return {"ok": True, "action": "updated", "message": f"更新本地 note={ydrop_id[:8]}"}
         await _save_mapping(ydrop_id, record_id)
-        return {"ok": True, "action": "noop", "message": "本地比远端新或一致，跳过"}
+        return {"ok": True, "action": "noop", "message": "远端无新更新，跳过"}
     except FeishuError as e:
         return {"ok": False, "action": "error", "message": str(e)}
     except Exception as e:
@@ -300,12 +321,14 @@ async def pull_from_feishu() -> dict:
                     errors.append(f"回写 ydrop_id 到 record={rid} 失败：{e}")
                 continue
 
-            # 已有 ydrop_id：last_write_wins
+            # 已有 ydrop_id：远端 updated_at > 上次同步时间 = 远端有新改动
             local = await _load_note_dict(ydrop_id)
             if local is None:
                 # 本地没了（可能被彻底删过），跳过避免复活
                 continue
-            if remote["updated_at"] > local["updated_at"]:
+            mapping = await _get_mapping_full(ydrop_id)
+            last_synced = mapping.get("last_synced_at", 0) if mapping else 0
+            if remote["updated_at"] > last_synced:
                 await _upsert_local_from_remote(remote, is_new=False)
                 pulled_updated += 1
             await _save_mapping(ydrop_id, rid)
