@@ -292,12 +292,14 @@ class FeishuClient:
     async def list_records(self, app_token: str, table_id: str, page_size: int = 200) -> list[dict]:
         """列出表里所有 record。每条含 record_id / fields / created_time / last_modified_time。
 
+        ⚠ 关键：必须带 automatic_fields=true！否则飞书默认不返回 last_modified_time / created_time
+        系统字段，我们的 last_write_wins 判定会拿到 None → 错误 fallback 到当下时间 → echo loop。
         page_size 上限 500；这里 200 以减少单次响应体积，给慢网容差。
         """
         out: list[dict] = []
         page_token = ""
         while True:
-            qs = f"?page_size={page_size}" + (f"&page_token={page_token}" if page_token else "")
+            qs = f"?page_size={page_size}&automatic_fields=true" + (f"&page_token={page_token}" if page_token else "")
             data = await self._bearer_get(RECORDS_PATH.format(app_token=app_token, table_id=table_id) + qs)
             out.extend(data.get("items") or [])
             if not data.get("has_more"):
@@ -310,10 +312,14 @@ class FeishuClient:
     # ─── Bitable: 单条 record ───
 
     async def get_record(self, app_token: str, table_id: str, record_id: str) -> Optional[dict]:
-        """读单条 record。404 (1254043 / 1254040) 返回 None；其它错误抛 FeishuError。"""
+        """读单条 record。404 (1254043 / 1254040) 返回 None；其它错误抛 FeishuError。
+
+        必须 automatic_fields=true 让 last_modified_time / created_time 一起返回，否则
+        webhook 单条快路径无法做时间戳比较（echo loop 重灾区）。"""
         try:
             data = await self._bearer_get(
                 RECORD_ITEM_PATH.format(app_token=app_token, table_id=table_id, record_id=record_id)
+                + "?automatic_fields=true"
             )
             return data.get("record") or None
         except FeishuError as e:

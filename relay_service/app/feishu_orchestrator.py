@@ -30,6 +30,12 @@ from .feishu_mapping import bitable_fields_to_note_dict, note_to_bitable_fields
 
 logger = logging.getLogger("feishu_sync")
 
+# 解决 echo loop：刚 push 给飞书的 record 的 last_modified_time 会比我们
+# _save_mapping 的时间稍晚（飞书内部写入耗时 + 时钟偏差），如果直接比较 last_synced_at
+# 会被误判为"远端有新更新"，触发循环：push → pull 误更新 → 再 push → 再 pull 误更新...
+# 阈值设 5 秒：人类在飞书改完到下一轮 pull 之间通常 ≥ 60 秒（sync_interval），不会被误过滤。
+ECHO_GUARD_MS = 5_000
+
 
 # ─── 内部 helpers ───
 
@@ -249,11 +255,12 @@ async def pull_one_record(record_id: str) -> dict:
         local = await _load_note_dict(ydrop_id)
         if local is None:
             return {"ok": True, "action": "noop", "message": "本地笔记不存在（可能已彻底删）"}
-        # 关键决策：远端 updated_at > 上次同步时间 = 远端有新改动需要拉。
-        # 不是与本地 updated_at 比 — 否则 web 端在飞书之后改一次，飞书后续的改就再也拉不到了。
+        # 关键决策：远端 updated_at > 上次同步时间 + 阈值 = 远端有新改动需要拉。
+        # ECHO_GUARD_MS 阈值解决 echo loop：刚 push 的 record 飞书 last_modified_time
+        # 会比我们 _save_mapping 时间晚几百毫秒到几秒，不加阈值会被误判"远端更新"陷入死循环。
         mapping = await _get_mapping_full(ydrop_id)
         last_synced = mapping.get("last_synced_at", 0) if mapping else 0
-        if remote["updated_at"] > last_synced:
+        if remote["updated_at"] > last_synced + ECHO_GUARD_MS:
             await _upsert_local_from_remote(remote, is_new=False)
             await _save_mapping(ydrop_id, record_id)
             return {"ok": True, "action": "updated", "message": f"更新本地 note={ydrop_id[:8]}"}
@@ -321,14 +328,14 @@ async def pull_from_feishu() -> dict:
                     errors.append(f"回写 ydrop_id 到 record={rid} 失败：{e}")
                 continue
 
-            # 已有 ydrop_id：远端 updated_at > 上次同步时间 = 远端有新改动
+            # 已有 ydrop_id：远端 updated_at > 上次同步时间 + 阈值 = 远端有新改动
             local = await _load_note_dict(ydrop_id)
             if local is None:
                 # 本地没了（可能被彻底删过），跳过避免复活
                 continue
             mapping = await _get_mapping_full(ydrop_id)
             last_synced = mapping.get("last_synced_at", 0) if mapping else 0
-            if remote["updated_at"] > last_synced:
+            if remote["updated_at"] > last_synced + ECHO_GUARD_MS:
                 await _upsert_local_from_remote(remote, is_new=False)
                 pulled_updated += 1
             await _save_mapping(ydrop_id, rid)
