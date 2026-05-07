@@ -169,8 +169,18 @@ class WebDavClient:
         headers = {**self._auth_header(), "Content-Type": "text/markdown; charset=utf-8"}
         encoded_filename = quote(remote_path.rsplit("/", 1)[-1])
         url = self._url(f"{folder}/{encoded_filename}" if folder else encoded_filename)
-        r = await client.put(url, headers=headers, content=content.encode("utf-8"))
-        if r.status_code not in range(200, 300):
+        # 短时间大量 PUT 时部分 NAS WebDAV 服务端会偶发 401 / 503（限流 / keep-alive 状态紊乱）。
+        # 重试一次：sleep 0.3s 等服务端缓过劲，重新建鉴权 header 再发。
+        import asyncio as _asyncio
+        body = content.encode("utf-8")
+        for attempt in range(2):
+            r = await client.put(url, headers=headers, content=body)
+            if r.status_code in range(200, 300):
+                return
+            if attempt == 0 and r.status_code in (401, 429, 502, 503, 504):
+                logger.warning("WebDAV PUT %d on %s, retry once after 0.3s", r.status_code, remote_path)
+                await _asyncio.sleep(0.3)
+                continue
             raise IOError(f"WebDAV 上传失败: HTTP {r.status_code}")
 
     async def pull(self, remote_path: str) -> str:

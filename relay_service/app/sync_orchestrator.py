@@ -152,12 +152,12 @@ async def sync_bidirectional() -> dict:
                             "CONFLICT (local wins): id=%s local_updated=%s remote_updated=%s",
                             remote_id, local_updated, remote_updated,
                         )
-                        if await _push_note(db, client, local):
+                        if await _push_note_with_throttle(db, client,local):
                             pushed += 1
                         else:
                             errors += 1
                 elif local_updated > remote_updated and local["status"] != "SYNCED":
-                    if await _push_note(db, client, local):
+                    if await _push_note_with_throttle(db, client,local):
                         pushed += 1
                     else:
                         errors += 1
@@ -177,7 +177,7 @@ async def sync_bidirectional() -> dict:
             if local["status"] == "SYNCED" and note_id in remote_by_id:
                 continue
             if note_id not in remote_by_id:
-                if await _push_note(db, client, local):
+                if await _push_note_with_throttle(db, client,local):
                     pushed += 1
                 else:
                     errors += 1
@@ -224,7 +224,7 @@ async def push_single_note(note_id: str) -> bool:
             return await delete_remote_by_id(note_id)
         client = await WebDavClient.from_store()
         try:
-            ok = await _push_note(db, client, note)
+            ok = await _push_note_with_throttle(db, client,note)
             await db.commit()
             return ok
         finally:
@@ -313,6 +313,14 @@ async def _upsert_from_remote(db, note: dict, remote_path: str) -> None:
     # WebDAV 拉到（多半来自 Android 端写入），也推一遍飞书 Bitable —— 否则 Android 端的改动
     # 永远不会反映到飞书。fire-and-forget；feishu 未启用时短路。
     _trigger_feishu_after_webdav_pull(note["id"])
+
+
+async def _push_note_with_throttle(db, client: WebDavClient, local_row) -> bool:
+    """带限流的 push：每条 push 之间 sleep 50ms，避免 NAS WebDAV 服务端限流爆 401。"""
+    import asyncio as _asyncio
+    ok = await _push_note(db, client, local_row)
+    await _asyncio.sleep(0.05)
+    return ok
 
 
 async def _push_note(db, client: WebDavClient, local_row) -> bool:
